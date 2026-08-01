@@ -1,0 +1,10 @@
+{
+  "name": "Kya Banayein?",
+  "short_name": "Kya Banayein",
+  "description": "Plan meals, track the kitchen, know what to buy.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f3ea",
+  "theme_color": "#9d3d2c",
+  "icons": []
+}

@@ -1,0 +1,1 @@
+Kya Banayein is the household meal-planner for Indian kitchens. It reads your pantry, knows your family's rules, and suggests 3 realistic meals for tonight — veg, time-bound, and matched to what you already have.
