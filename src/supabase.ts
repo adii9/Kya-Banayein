@@ -1,7 +1,9 @@
 import { createClient } from '@supabase/supabase-js'
 
-const URL = 'https://orivktxrtiqggemxetyc.supabase.co'
-const ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9yaXZrdHhydGlxZ2dlbXhldHljIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1ODg3MzUsImV4cCI6MjEwMTE2NDczNX0.cXLPkpazEj1lOLCOU_PCs_EY2JxXbvFJQJvLwy62nN8'
+// Read from Vite env vars (set in Vercel Project Settings → Environment Variables
+// for Production / Preview / Development). Local dev: copy .env.example to .env.
+const URL = import.meta.env.VITE_SUPABASE_URL ?? 'https://orivktxrtiqggemxetyc.supabase.co'
+const ANON = import.meta.env.VITE_SUPABASE_ANON_KEY ?? 'eyJhbG...2nN8'
 
 export const supabase = createClient(URL, ANON, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
