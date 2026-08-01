@@ -73,19 +73,12 @@ function speak(text: string, lang: string) {
 
 function SignIn() {
   const signInWithGoogle = async () => {
-    // Production always redirects back to the app URL. The previous version
-    // used window.location.origin, which sent the post-OAuth callback to
-    // whatever tab initiated the flow (often localhost:5173 if a dev server
-    // happened to be running). The ?redirect= override is dev-only — it must
-    // never be respected in production, otherwise a crafted share link could
-    // bounce a sign-in to an attacker-controlled origin.
-    const PROD_REDIRECT = 'https://kya-banayein-theta.vercel.app'
-    const urlParams = new URLSearchParams(window.location.search)
-    const explicitRedirect = urlParams.get('redirect')
-    const redirectTo =
-      import.meta.env.MODE === 'production'
-        ? PROD_REDIRECT
-        : explicitRedirect ?? PROD_REDIRECT
+    // Always redirect back to the canonical app URL. Using
+    // window.location.origin was a footgun: any tab that initiated the
+    // sign-in while on localhost (e.g. with `npm run dev` running) sent
+    // the post-OAuth callback there, and Supabase happily redirected the
+    // user to localhost after Google sign-in.
+    const redirectTo = 'https://kya-banayein-theta.vercel.app'
     await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: { redirectTo },
