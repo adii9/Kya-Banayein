@@ -73,9 +73,16 @@ function speak(text: string, lang: string) {
 
 function SignIn() {
   const signInWithGoogle = async () => {
+    // Hardcode the production URL so phone/sessions-in-other-tabs don't fall
+    // back to whatever the current tab's origin is (e.g. localhost:5173 if the
+    // user happened to also have a dev server running). Override at runtime with
+    // a query param like ?redirect=https://app.example.com if you ever need to.
+    const urlParams = new URLSearchParams(window.location.search)
+    const explicitRedirect = urlParams.get('redirect')
+    const redirectTo = explicitRedirect ?? 'https://kya-banayein-theta.vercel.app'
     await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: `${window.location.origin}` },
+      options: { redirectTo },
     })
   }
   return <div className="auth-screen">
