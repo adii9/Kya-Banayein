@@ -8,7 +8,7 @@ import { addVoter as _addVoter, buildWhatsAppShareUrl, castVote as _castVote, cr
 import { supabase, SUPABASE_URL } from './supabase'
 import * as api from './api'
 
-type Tab = 'today' | 'inventory' | 'orders' | 'household' | 'onboarding'
+type Tab = 'today' | 'inventory' | 'orders' | 'household' | 'onboarding' | 'join'
 
 type Preferences = {
   familyName: string
@@ -98,6 +98,43 @@ function SignIn() {
   </div>
 }
 
+function JoinScreen({ code, household, onJoin, onCancel, busy }: {
+  code: string
+  household?: { id: string; name: string }
+  onJoin: (name: string) => Promise<void>
+  onCancel: () => void
+  busy: boolean
+}) {
+  const [name, setName] = useState('')
+  const submit = async () => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    await onJoin(trimmed)
+  }
+  return <div className="auth-screen">
+    <div className="onboarding-card">
+      <span className="eyebrow"><Users size={14} /> JOIN A KITCHEN</span>
+      <h1>You're invited to vote</h1>
+      {household
+        ? <p><b>{household.name}</b> wants you to vote on tonight's dinner. Pick a name to join their kitchen.</p>
+        : <p>You've been invited to vote on tonight's dinner with code <code>{code}</code>, but no kitchen was found for it. Double-check the link with whoever sent it.</p>}
+      {household && <>
+        <label className="onboarding-field">
+          <span>Your name in their kitchen</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Diya, Papa, Nani" autoFocus onKeyDown={(e) => e.key === 'Enter' && submit()} />
+        </label>
+        <div className="onboarding-actions">
+          <button className="primary" disabled={busy || !name.trim()} onClick={submit}>{busy ? 'Joining…' : 'Join kitchen'}</button>
+          <button className="reset-button" disabled={busy} onClick={onCancel}>No, thanks</button>
+        </div>
+      </>}
+      {!household && <div className="onboarding-actions">
+        <button className="reset-button" onClick={onCancel}>Back to my kitchen</button>
+      </div>}
+    </div>
+  </div>
+}
+
 function Onboarding({ session, onComplete }: { session: Session; onComplete: (household: api.Household) => void }) {
   const [name, setName] = useState('My Kitchen')
   const [members, setMembers] = useState(4)
@@ -151,6 +188,16 @@ function App() {
   const [household, setHousehold] = useState<api.Household | null>(null)
   const [bootstrapping, setBootstrapping] = useState(true)
   const [tab, setTab] = useState<Tab>('today')
+  // Dynamic day/meal-of-day labels for the Today hero. Recomputed on every
+  // render — cheap, and means a user opening the app at 6pm sees "Wednesday
+  // DINNER" and at 7am sees "Wednesday BREAKFAST" without any state plumbing.
+  const now = new Date()
+  const weekday = now.toLocaleDateString('en-IN', { weekday: 'long' }).toUpperCase()
+  const hour = now.getHours()
+  const mealOfDay: 'BREAKFAST' | 'LUNCH' | 'SNACKS' | 'DINNER' = hour < 11 ? 'BREAKFAST' : hour < 16 ? 'LUNCH' : hour < 19 ? 'SNACKS' : 'DINNER'
+  const todayLabel = `${weekday} ${mealOfDay}`
+  const greeting = hour < 11 ? 'Subah ka kya banayein?' : hour < 16 ? 'Dopahar ka kya banayein?' : 'Shaam ka kya banayein?'
+  const mealNoun = mealOfDay === 'BREAKFAST' ? "Today's breakfast" : mealOfDay === 'LUNCH' ? "Today's lunch" : mealOfDay === 'SNACKS' ? "Today's snacks" : "Tonight's dinner"
   const [preferences, setPreferences] = useState(() => load('kya-preferences', DEFAULT_PREFERENCES))
   const [inventory, setInventory] = useState<InventoryItem[]>(() => load('kya-inventory', DEFAULT_INVENTORY))
   const [selected, setSelected] = useState<MealOption | null>(null)
@@ -169,12 +216,35 @@ function App() {
   const [activeVoter, setActiveVoter] = useState<string | null>(null)
   const [voterIndex, setVoterIndex] = useState<Record<string, string>>({})
   const [votesToday, setVotesToday] = useState<Record<string, string>>({})
+  const [mealHistory, setMealHistory] = useState<api.MealHistoryRow[]>([])
+  // Pending join request from a shared ?join=... link. Set on mount if
+  // the URL has a join code; cleared once the user joins or dismisses.
+  const [pendingJoin, setPendingJoin] = useState<{ code: string; household?: { id: string; name: string } } | null>(null)
+  const [joinBusy, setJoinBusy] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session: s } }) => { setSession(s); setBootstrapping(false) })
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s))
     return () => sub.subscription.unsubscribe()
   }, [])
+
+  // Detect a ?join=... share link on mount. If the user is already signed
+  // in, look up the household immediately and surface the join screen. If
+  // not, remember the code so we can show it after they sign in.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    const code = params.get('join')
+    if (!code) return
+    if (!session?.user?.id) return
+    let cancelled = false
+    api.fetchHouseholdByJoinCode(code).then((h) => {
+      if (cancelled) return
+      if (h) setPendingJoin({ code, household: h })
+      else setPendingJoin({ code })
+    }).catch(() => { if (!cancelled) setPendingJoin({ code }) })
+    return () => { cancelled = true }
+  }, [session?.user?.id])
 
   useEffect(() => {
     if (!session?.user?.id) return
@@ -185,9 +255,21 @@ function App() {
         if (cancelled) return
         if (!hh) { setTab('onboarding'); return }
         setHousehold(hh)
-        const [inv, voters, votes] = await Promise.all([api.fetchInventory(hh.id), api.fetchVoters(hh.id), api.fetchVotesToday(hh.id)])
+        // Lazy-generate a join code if this household doesn't have one yet.
+        // The SQL migration only backfills on the existing household; new
+        // households created via onboarding need the code generated in JS.
+        if (!hh.join_code) {
+          api.generateAndSetJoinCode(hh).then((updated) => setHousehold(updated)).catch((e) => console.warn('Could not generate join code', e))
+        }
+        const [inv, voters, votes, history] = await Promise.all([
+          api.fetchInventory(hh.id),
+          api.fetchVoters(hh.id),
+          api.fetchVotesToday(hh.id),
+          api.fetchMealHistory(hh.id, 7),
+        ])
         if (cancelled) return
         setInventory(inv)
+        setMealHistory(history)
         const idx: Record<string, string> = {}
         voters.forEach((v) => { idx[v.name] = v.id })
         setVoterIndex(idx)
@@ -237,6 +319,8 @@ function App() {
       try {
         await Promise.all(next.map((i) => api.updateInventoryItem(i.id, i.quantity)))
         await api.recordMeal(household.id, selected.id, selected.dishes)
+        // Refresh the history so the new meal shows up immediately.
+        api.fetchMealHistory(household.id, 7).then(setMealHistory).catch(() => {})
       } catch (e) { console.error('Confirm sync failed:', e) }
     }
   }
@@ -360,6 +444,26 @@ function App() {
 
   if (bootstrapping) return <div className="auth-screen"><div className="auth-card"><span className="brand-mark"><UtensilsCrossed size={28} /></span><h1>Kya Banayein?</h1><p>Loading…</p></div></div>
   if (!session) return <SignIn />
+  if (pendingJoin) return <JoinScreen
+    code={pendingJoin.code}
+    household={pendingJoin.household}
+    busy={joinBusy}
+    onCancel={() => { setPendingJoin(null); window.history.replaceState({}, '', window.location.pathname) }}
+    onJoin={async (voterName) => {
+      if (!pendingJoin.household) return
+      setJoinBusy(true)
+      try {
+        await api.addVoterRow(pendingJoin.household.id, voterName, generateCode())
+        // Strip the ?join= param from the URL so reload doesn't re-trigger the screen.
+        window.history.replaceState({}, '', window.location.pathname)
+        setPendingJoin(null)
+        alert(`You're now a voter in ${pendingJoin.household.name}. Open the app's Today tab on your device — but voting requires the owner to be on the same screen for now. A proper multi-device flow is coming next.`)
+      } catch (e) {
+        console.error('Join failed:', e)
+        alert('Could not join. The link may be expired or the household may have been deleted.')
+      } finally { setJoinBusy(false) }
+    }}
+  />
   if (!household) return <Onboarding session={session} onComplete={(hh) => { setHousehold(hh); setTab('today') }} />
 
   const voterList = Object.entries(voterIndex).map(([name, id]) => ({ name, id, code: id.slice(0, 5).toUpperCase() }))
@@ -377,7 +481,7 @@ function App() {
     <main>
       {tab === 'today' && <>
         <section className="hero-copy">
-          <div><span className="eyebrow"><Sparkles size={14} /> SATURDAY DINNER</span><h1>Aaj kya banayein?</h1><p>We found meals that fit your kitchen and your family.</p></div>
+          <div><span className="eyebrow"><Sparkles size={14} /> {todayLabel}</span><h1>{greeting}</h1><p>We found meals that fit your kitchen and your family.</p></div>
           <div className="meal-controls">
             <label><span>Options to show</span><Counter value={preferences.suggestionCount} setValue={(suggestionCount) => setPreferences({ ...preferences, suggestionCount })} /></label>
             <label><span>Dishes per meal</span><Counter value={preferences.dishesPerMeal} setValue={(dishesPerMeal) => setPreferences({ ...preferences, dishesPerMeal })} /></label>
@@ -472,8 +576,23 @@ function App() {
           })}
         </section>
 
+        {mealHistory.length > 0 && <section className="history-section">
+          <div className="page-heading"><span className="eyebrow"><Clock3 size={14} /> THIS WEEK</span><h2>Recently cooked</h2><p>Last {mealHistory.length} meal{mealHistory.length === 1 ? '' : 's'} you've confirmed. Use this to avoid repeats.</p></div>
+          <ul className="history-list">
+            {mealHistory.map((h, i) => {
+              const date = new Date(h.confirmed_at)
+              const dishNames = Array.isArray(h.dishes) ? h.dishes.map((d) => d.name).join(' + ') : 'meal'
+              return <li key={`${h.confirmed_at}-${i}`} className="history-row">
+                <span className="history-date">{date.toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</span>
+                <span className="history-meal">{dishNames}</span>
+                <span className="history-time">{date.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true })}</span>
+              </li>
+            })}
+          </ul>
+        </section>}
+
         {selected && <section className="confirmation-bar">
-          <div><span className="mini-plate"><UtensilsCrossed size={20} /></span><span><small>Tonight’s dinner</small><b>{selected.dishes.map((dish) => dish.name).join(' + ')}</b></span></div>
+          <div><span className="mini-plate"><UtensilsCrossed size={20} /></span><span><small>{mealNoun}</small><b>{selected.dishes.map((dish) => dish.name).join(' + ')}</b></span></div>
           {confirmed === selected.id ? <button className="confirmed"><Check size={18} /> Inventory updated</button> : <button className="primary" onClick={confirm}>Confirm meal & use stock <ChevronRight size={18} /></button>}
         </section>}
       </>}

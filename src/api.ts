@@ -2,6 +2,22 @@ import type { InventoryItem, Dish } from './mealEngine'
 import { DEFAULT_INVENTORY } from './mealEngine'
 import { supabase } from './supabase'
 
+// Generates a 'JOIN-XXXXX' household join code. ~1M combinations (32^5);
+// on the rare chance of collision, the caller retries. We exclude
+// visually-ambiguous chars (0/O, 1/I/L) so codes are easy to read aloud.
+const JOIN_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+export const generateJoinCode = (): string => {
+  const arr = new Uint8Array(5)
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(arr)
+  } else {
+    for (let i = 0; i < 5; i += 1) arr[i] = Math.floor(Math.random() * 256)
+  }
+  let out = ''
+  for (let i = 0; i < 5; i += 1) out += JOIN_ALPHABET[arr[i] % JOIN_ALPHABET.length]
+  return `JOIN-${out}`
+}
+
 export type Household = {
   id: string
   owner_id: string
@@ -11,6 +27,7 @@ export type Household = {
   vegetarian: boolean
   voting_enabled: boolean
   onboarding_complete: boolean
+  join_code: string | null
 }
 
 export type Voter = { id: string; name: string; invite_code: string }
@@ -88,4 +105,54 @@ export const upsertVote = async (householdId: string, voterId: string, mealId: s
 export const recordMeal = async (householdId: string, mealId: string, dishes: Dish[]) => {
   const { error } = await table('meal_history').insert({ household_id: householdId, meal_id: mealId, dishes })
   if (error) throw error
+}
+
+export const fetchMealHistory = async (householdId: string, limit = 7): Promise<MealHistoryRow[]> => {
+  const { data, error } = await table('meal_history')
+    .select('meal_id, dishes, confirmed_at')
+    .eq('household_id', householdId)
+    .order('confirmed_at', { ascending: false })
+    .limit(limit)
+  if (error) throw error
+  return (data ?? []) as MealHistoryRow[]
+}
+
+// Public lookup by join code. The RLS policy "join code lookup" on
+// households allows SELECT when join_code is not null, so this works for
+// any authenticated user (including joiners who aren't the owner). We
+// return the bare minimum the join screen needs: id and name. We never
+// expose owner_id, region, or other private fields.
+export const fetchHouseholdByJoinCode = async (code: string): Promise<{ id: string; name: string } | null> => {
+  const { data, error } = await table('households')
+    .select('id, name')
+    .eq('join_code', code)
+    .maybeSingle()
+  if (error) throw error
+  return data as { id: string; name: string } | null
+}
+
+// Persist a freshly generated join code on the household. Idempotent —
+// callers should generate once and only set if null. The RLS "join code
+// lookup" policy permits this for the owner (any authenticated user
+// with is_household_owner = true).
+export const setHouseholdJoinCode = async (householdId: string, code: string) => {
+  const { error } = await table('households').update({ join_code: code }).eq('id', householdId)
+  if (error) throw error
+}
+
+// Generates and persists a join code, retrying on the (rare) chance of
+// collision. Returns the updated household. Bails after 5 attempts.
+export const generateAndSetJoinCode = async (hh: Household): Promise<Household> => {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const code = generateJoinCode()
+    try {
+      await setHouseholdJoinCode(hh.id, code)
+      return { ...hh, join_code: code }
+    } catch (e: any) {
+      // Supabase unique-violation code is '23505'. Retry on collision;
+      // surface any other error immediately.
+      if (e?.code !== '23505' && !String(e?.message || '').includes('duplicate')) throw e
+    }
+  }
+  throw new Error('Could not generate a unique join code after 5 attempts')
 }
