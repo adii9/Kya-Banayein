@@ -2,12 +2,14 @@ import { createClient } from '@supabase/supabase-js'
 
 // Read from Vite env vars (set in Vercel Project Settings → Environment Variables
 // for Production / Preview / Development). Local dev: copy .env.example to .env.
+
 //
 // Hard-fail at startup if the keys are missing in production, instead of
 // silently using placeholder strings — that mistake shipped a `sb_secret_…`
 // key in a public bundle once, and the silent fallback is what let it through.
 const URL = import.meta.env.VITE_SUPABASE_URL
 const ANON = import.meta.env.VITE_SUPABASE_ANON_KEY
+
 
 if (!URL || !ANON) {
   const env = import.meta.env.MODE
