@@ -73,13 +73,19 @@ function speak(text: string, lang: string) {
 
 function SignIn() {
   const signInWithGoogle = async () => {
-    // Hardcode the production URL so phone/sessions-in-other-tabs don't fall
-    // back to whatever the current tab's origin is (e.g. localhost:5173 if the
-    // user happened to also have a dev server running). Override at runtime with
-    // a query param like ?redirect=https://app.example.com if you ever need to.
+    // Production always redirects back to the app URL. The previous version
+    // used window.location.origin, which sent the post-OAuth callback to
+    // whatever tab initiated the flow (often localhost:5173 if a dev server
+    // happened to be running). The ?redirect= override is dev-only — it must
+    // never be respected in production, otherwise a crafted share link could
+    // bounce a sign-in to an attacker-controlled origin.
+    const PROD_REDIRECT = 'https://kya-banayein-theta.vercel.app'
     const urlParams = new URLSearchParams(window.location.search)
     const explicitRedirect = urlParams.get('redirect')
-    const redirectTo = explicitRedirect ?? 'https://kya-banayein-theta.vercel.app'
+    const redirectTo =
+      import.meta.env.MODE === 'production'
+        ? PROD_REDIRECT
+        : explicitRedirect ?? PROD_REDIRECT
     await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: { redirectTo },
