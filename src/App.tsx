@@ -73,9 +73,15 @@ function speak(text: string, lang: string) {
 
 function SignIn() {
   const signInWithGoogle = async () => {
+    // Always redirect back to the canonical app URL. Using
+    // window.location.origin was a footgun: any tab that initiated the
+    // sign-in while on localhost (e.g. with `npm run dev` running) sent
+    // the post-OAuth callback there, and Supabase happily redirected the
+    // user to localhost after Google sign-in.
+    const redirectTo = 'https://kya-banayein-theta.vercel.app'
     await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: `${window.location.origin}` },
+      options: { redirectTo },
     })
   }
   return <div className="auth-screen">
