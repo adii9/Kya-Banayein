@@ -1342,8 +1342,81 @@ function App() {
 }
 
 
-function FamilyPage({ voters, preferences }: { voters: api.Voter[]; preferences: { familyName: string; members: number; vegetarian: boolean }; voterPreferences: api.VoterMealPreference[]; busy: boolean; onAddVoter: (name: string) => Promise<void>; onRemoveVoter: (id: string) => Promise<void>; onAddPreference: (voterId: string, slot: api.MealSlot, mealName: string) => Promise<void>; onRemovePreference: (id: string) => Promise<void> }) {
-  return <section className="page-section"><h1>Family</h1><p>{preferences.familyName} — {voters.length} members</p></section>
+function FamilyPage({ voters, preferences, voterPreferences, onAddVoter, onRemoveVoter, onAddPreference, onRemovePreference, busy }: { voters: api.Voter[]; preferences: { familyName: string; members: number; vegetarian: boolean }; voterPreferences: api.VoterMealPreference[]; busy: boolean; onAddVoter: (name: string) => Promise<void>; onRemoveVoter: (id: string) => Promise<void>; onAddPreference: (voterId: string, slot: api.MealSlot, mealName: string) => Promise<void>; onRemovePreference: (id: string) => Promise<void> }) {
+  const [newName, setNewName] = useState('')
+  // Adding-dish UI state: which (voterId, slot) is currently being edited.
+  const [addingFor, setAddingFor] = useState<{ voterId: string; slot: api.MealSlot } | null>(null)
+  const [newDish, setNewDish] = useState('')
+  // Group preferences by (voterId, slot) for the grid render.
+  const grouped: Record<string, Record<api.MealSlot, api.VoterMealPreference[]>> = {}
+  voterPreferences.forEach((p) => {
+    if (!p.slot) return
+    if (!grouped[p.voter_id]) grouped[p.voter_id] = { BREAKFAST: [], LUNCH: [], DINNER: [] }
+    grouped[p.voter_id][p.slot].push(p)
+  })
+  const SLOTS: api.MealSlot[] = ['BREAKFAST', 'LUNCH', 'DINNER']
+  const slotLabel = (s: api.MealSlot) => s === 'BREAKFAST' ? 'Breakfast' : s === 'LUNCH' ? 'Lunch' : 'Dinner'
+  const startAdd = (voterId: string, slot: api.MealSlot) => { setAddingFor({ voterId, slot }); setNewDish('') }
+  const cancelAdd = () => { setAddingFor(null); setNewDish('') }
+  const submitDish = () => {
+    if (!addingFor || !newDish.trim()) return
+    onAddPreference(addingFor.voterId, addingFor.slot, newDish.trim())
+    setNewDish('')
+    setAddingFor(null)
+  }
+  return <section className="page-section family-page">
+    <div className="page-heading">
+      <span className="eyebrow"><Users size={14} /> YOUR KITCHEN</span>
+      <h1>{preferences.familyName} — Family</h1>
+      <p>Add the people in your household and what they like for breakfast, lunch, and dinner.</p>
+    </div>
+    <div className="family-add-row">
+      <input placeholder="Add a family member (e.g. Yash, Mom, Dad)" value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && newDish === '' && newName.trim()) { onAddVoter(newName.trim()); setNewName('') } }} disabled={busy} />
+      <button className="primary" onClick={() => { if (newName.trim()) { onAddVoter(newName.trim()); setNewName('') } }} disabled={busy || !newName.trim()}><Plus size={16} /> Add</button>
+    </div>
+    {voters.length === 0 ? <div className="empty-state">
+      <Users size={28} />
+      <p>No family members yet. Add at least one to start setting meal preferences.</p>
+    </div> : <>
+      <div className="family-grid">
+        <div className="family-grid-header">
+          <div className="family-name-col" />
+          {SLOTS.map((s) => <div key={s} className="family-slot-col"><span>{slotLabel(s)}</span></div>)}
+          <div className="family-actions-col" />
+        </div>
+        {voters.map((v) => {
+          const bySlot = grouped[v.id] || { BREAKFAST: [], LUNCH: [], DINNER: [] }
+          return <div key={v.id} className="family-row">
+            <div className="family-name-col">
+              <b>{v.name}</b>
+              <small>code: {v.invite_code}</small>
+            </div>
+            {SLOTS.map((s) => <div key={s} className="family-slot-col" data-slot={slotLabel(s)}>
+              <div className="family-chips">
+                {bySlot[s].length === 0 && <span className="family-empty-slot">—</span>}
+                {bySlot[s].map((p) => <span key={p.id} className="family-chip">
+                  {p.meal_name}
+                  <button onClick={() => onRemovePreference(p.id)} disabled={busy} aria-label={`Remove ${p.meal_name}`}><X size={12} /></button>
+                </span>)}
+              </div>
+              {addingFor && addingFor.voterId === v.id && addingFor.slot === s ? <div className="family-add-dish">
+                <input autoFocus value={newDish} onChange={(e) => setNewDish(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submitDish(); if (e.key === 'Escape') cancelAdd() }} placeholder="e.g. Poha" disabled={busy} />
+                <button className="primary mini" onClick={submitDish} disabled={busy || !newDish.trim()}>Add</button>
+                <button className="reset-button mini" onClick={cancelAdd} disabled={busy}>Cancel</button>
+              </div> : <button className="family-add-dish-btn" onClick={() => startAdd(v.id, s)} disabled={busy}><Plus size={12} /> Add dish</button>}
+            </div>)}
+            <div className="family-actions-col">
+              <button className="family-remove" onClick={() => { if (window.confirm(`Remove ${v.name}?`)) onRemoveVoter(v.id) }} disabled={busy} aria-label={`Remove ${v.name}`}><X size={14} /></button>
+            </div>
+          </div>
+        })}
+      </div>
+      <div className="family-note">
+        <Sparkles size={16} />
+        <span>Meal suggestions will start using these preferences once Phase D lands. For now, you can add per-person meal preferences and the chat can read them.</span>
+      </div>
+    </>}
+  </section>
 }
 function OrderList({ title, subtitle, items, empty, shareText, onShare }: { title: string; subtitle: string; items: { id: string; name: string; quantity: number; unit: string }[]; empty: string; shareText: string; onShare: (text: string) => void }) {
   return <article className="order-card"><div className="order-head"><div><h2>{title}</h2><p>{subtitle}</p></div><span>{items.length}</span></div>
