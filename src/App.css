@@ -392,3 +392,15 @@ header .brand small { color: var(--muted); }
 .onboarding-summary-details li { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid rgba(220,165,49,.1); font-size: 13px; }
 .onboarding-summary-details li b { color: var(--ink); font-weight: 500; }
 .onboarding-summary-details li span { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Custom-item form at the bottom of each group step. Always visible so
+   the user can add things not in the template. */
+.onboarding-custom-row { display: flex; gap: 6px; align-items: center; margin-top: 12px; padding: 10px 12px; background: rgba(220,165,49,.05); border: 1px dashed rgba(220,165,49,.4); border-radius: 10px; flex-wrap: wrap; }
+.onboarding-custom-label { font-size: 12px; font-weight: 600; color: var(--orange); white-space: nowrap; }
+.onboarding-custom-name { flex: 1 1 200px; min-width: 160px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; background: #fff; }
+.onboarding-custom-qty { width: 80px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; background: #fff; }
+.onboarding-custom-unit { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; background: #fff; }
+.onboarding-custom-add { padding: 6px 14px; font-size: 13px; }
+.onboarding-custom-add:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.onboarding-item.custom { border-color: rgba(220,165,49,.4); }

@@ -325,10 +325,15 @@ function KitchenOnboarding({ session, onComplete }: { session: Session; onComple
   const [stepIdx, setStepIdx] = useState(0)
   const steps = useMemo(() => ['welcome', ...KITCHEN_GROUPS.map((g) => g.id), 'summary'] as const, [])
 
-  // The selected items live in a map keyed by template item id. When the
-  // user toggles an item on, we copy its defaults into the map; when off,
-  // we remove the entry. The user can edit quantity/unit inline.
-  const [picks, setPicks] = useState<Record<string, { qty: number; unit: 'g' | 'kg' | 'ml' | 'l' | 'pcs' }>>({})
+  // The selected items live in a map keyed by item id. Each entry holds
+  // the display name (so custom items without a template entry still
+  // round-trip through bulk-replace), the quantity and the unit. Template
+  // items use the template's name; custom items get a 'custom-' prefixed
+  // id and a user-supplied name.
+  const [picks, setPicks] = useState<Record<string, { name: string; qty: number; unit: 'g' | 'kg' | 'ml' | 'l' | 'pcs' }>>({})
+  // Custom-item form state, per group. Keyed by groupId so the form
+  // remembers its half-filled state when the user navigates back.
+  const [customDraft, setCustomDraft] = useState<Record<string, { name: string; qty: string; unit: 'g' | 'kg' | 'ml' | 'l' | 'pcs' }>>({})
 
   // Welcome-step state.
   const [name, setName] = useState('My Kitchen')
@@ -351,7 +356,7 @@ function KitchenOnboarding({ session, onComplete }: { session: Session; onComple
       if (next[item.id]) {
         delete next[item.id]
       } else {
-        next[item.id] = { qty: item.defaultQty, unit: item.defaultUnit }
+        next[item.id] = { name: item.name, qty: item.defaultQty, unit: item.defaultUnit }
       }
       return next
     })
@@ -364,6 +369,23 @@ function KitchenOnboarding({ session, onComplete }: { session: Session; onComple
     })
   }
 
+  // Add a custom item (typed by the user) to the picks map and clear the
+  // group's draft form. The id is a real UUID so it round-trips through
+  // the inventory_items.id column (which is uuid-typed). The name is
+  // whatever the user typed. We don't validate the name — the
+  // inventory_items.name column is text.
+  const addCustomItem = (group: typeof KITCHEN_GROUPS[number]) => {
+    const draft = customDraft[group.id]
+    if (!draft || !draft.name.trim()) return
+    const qty = parseFloat(draft.qty) || 0
+    if (qty <= 0) return
+    const id = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? `custom-${crypto.randomUUID()}`
+      : `custom-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+    setPicks((prev) => ({ ...prev, [id]: { name: draft.name.trim(), qty, unit: draft.unit } }))
+    setCustomDraft((prev) => ({ ...prev, [group.id]: { name: '', qty: '500', unit: 'g' } }))
+  }
+
   // Bulk-toggle a whole group: if all items in it are picked, uncheck all;
   // otherwise check all. Saves the user from a long tap-through.
   const toggleGroup = (group: typeof KITCHEN_GROUPS[number]) => {
@@ -374,7 +396,7 @@ function KitchenOnboarding({ session, onComplete }: { session: Session; onComple
         group.items.forEach((it) => delete next[it.id])
       } else {
         group.items.forEach((it) => {
-          if (!next[it.id]) next[it.id] = { qty: it.defaultQty, unit: it.defaultUnit }
+          if (!next[it.id]) next[it.id] = { name: it.name, qty: it.defaultQty, unit: it.defaultUnit }
         })
       }
       return next
@@ -402,10 +424,10 @@ function KitchenOnboarding({ session, onComplete }: { session: Session; onComple
             const tpl = group?.items.find((it) => it.id === id)
             return {
               id,
-              name: tpl?.name ?? id,
+              name: p.name || tpl?.name || id,  // p.name is the source of truth; tpl is fallback
               quantity: p.qty,
               unit: p.unit,
-              category: tpl?.category ?? 'monthly',
+              category: tpl?.category ?? 'monthly',  // custom items default to monthly reorder
               group: group?.id,
             } as { id: string; name: string; quantity: number; unit: 'g' | 'kg' | 'ml' | 'l' | 'pcs'; category: 'weekly' | 'monthly'; group?: string }
           })
@@ -464,7 +486,7 @@ function KitchenOnboarding({ session, onComplete }: { session: Session; onComple
           </div>
           <button className="reset-button onboarding-group-toggle-all" onClick={() => toggleGroup(currentGroup)}>{allPicked ? 'Uncheck all' : `Add all (${currentGroup.items.length})`}</button>
         </div>
-        <p className="onboarding-group-help">Tap to add. After tapping, edit the quantity if you want a different amount.</p>
+        <p className="onboarding-group-help">Tap to add. After tapping, edit the quantity if you want a different amount. Items not in the list? Add your own below.</p>
         <div className="onboarding-grid">
           {currentGroup.items.map((it) => {
             const picked = !!picks[it.id]
@@ -488,6 +510,61 @@ function KitchenOnboarding({ session, onComplete }: { session: Session; onComple
               )}
             </div>
           })}
+          {/* Render any custom items the user has added in this group. Custom
+              items are stored in the picks map with ids starting 'custom-'.
+              They behave like template items: toggle off to remove, edit
+              qty/unit inline. */}
+          {Object.entries(picks)
+            .filter(([id]) => id.startsWith('custom-'))
+            .map(([id, p]) => {
+              const picked = true  // custom items are always 'picked' by definition
+              return <div key={id} className={`onboarding-item custom picked`}>
+                <label className="onboarding-item-row">
+                  <input type="checkbox" checked={picked} onChange={() => setPicks((prev) => { const next = { ...prev }; delete next[id]; return next })} />
+                  <span className="onboarding-item-name">{p.name}</span>
+                  <span className="onboarding-item-default" style={{ background: 'rgba(220,165,49,.15)', color: 'var(--orange)', padding: '2px 8px', borderRadius: 999, fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}>Custom</span>
+                </label>
+                <div className="onboarding-item-edit">
+                  <input type="number" min="0" value={p.qty} onChange={(e) => updatePick(id, { qty: parseFloat(e.target.value) || 0 })} />
+                  <select value={p.unit} onChange={(e) => updatePick(id, { unit: e.target.value as any })}>
+                    <option value="g">g</option>
+                    <option value="kg">kg</option>
+                    <option value="ml">ml</option>
+                    <option value="l">l</option>
+                    <option value="pcs">pcs</option>
+                  </select>
+                </div>
+              </div>
+            })}
+        </div>
+
+        {/* Add custom item form. The form is always visible at the bottom
+            of each group step so the user can add anything missing from
+            the template (e.g. "kokum", "kasuri methi", "tamarind paste"). */}
+        <div className="onboarding-custom-row">
+          {(() => {
+            const draft = customDraft[currentGroup.id] ?? { name: '', qty: '500', unit: 'g' }
+            const update = (patch: Partial<typeof draft>) => setCustomDraft((prev) => ({ ...prev, [currentGroup.id]: { ...draft, ...patch } }))
+            return <>
+              <span className="onboarding-custom-label">+ Add your own</span>
+              <input
+                placeholder={`e.g. Kasuri methi for ${currentGroup.label.toLowerCase()}`}
+                value={draft.name}
+                onChange={(e) => update({ name: e.target.value })}
+                onKeyDown={(e) => e.key === 'Enter' && addCustomItem(currentGroup)}
+                className="onboarding-custom-name"
+              />
+              <input type="number" min="0" placeholder="qty" value={draft.qty} onChange={(e) => update({ qty: e.target.value })} className="onboarding-custom-qty" />
+              <select value={draft.unit} onChange={(e) => update({ unit: e.target.value as any })} className="onboarding-custom-unit">
+                <option value="g">g</option>
+                <option value="kg">kg</option>
+                <option value="ml">ml</option>
+                <option value="l">l</option>
+                <option value="pcs">pcs</option>
+              </select>
+              <button className="primary onboarding-custom-add" onClick={() => addCustomItem(currentGroup)} disabled={!draft.name.trim() || !parseFloat(draft.qty)}>Add</button>
+            </>
+          })()}
         </div>
         {error && <p className="onboarding-error">{error}</p>}
         <div className="onboarding-actions">
