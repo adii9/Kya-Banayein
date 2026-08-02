@@ -258,6 +258,36 @@ h1 { font-family: 'DM Serif Display', serif; font-size: clamp(42px, 6vw, 68px); 
 .signout-pill:hover { color: var(--red); }
 header .brand small { color: var(--muted); }
 
+/* Tutorial overlay (first-time user) */
+.tutorial-overlay { position: fixed; inset: 0; pointer-events: none; z-index: 100; }
+.tutorial-tip {
+  position: absolute;
+  pointer-events: auto;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 18px 20px;
+  width: min(320px, calc(100vw - 32px));
+  box-shadow: 0 16px 40px rgba(60,30,10,.18);
+  animation: tip-in 220ms ease-out;
+}
+.tutorial-tip h3 { font-size: 17px; margin: 4px 0 6px; }
+.tutorial-tip p { font-size: 13px; color: var(--muted); margin: 0 0 14px; line-height: 1.5; }
+.tutorial-progress { font-size: 10px; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; color: var(--orange); }
+.tutorial-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tutorial-actions .primary { padding: 8px 16px; font-size: 13px; }
+.tutorial-actions .reset-button { padding: 6px 10px; font-size: 12px; border: none; background: transparent; color: var(--muted); cursor: pointer; }
+.tutorial-actions .reset-button:hover { color: var(--ink); }
+@keyframes tip-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+/* Anchored to the element it's pointing at. */
+.tutorial-target-meal-grid { left: 16px; right: 16px; bottom: 100px; margin: 0 auto; }
+.tutorial-target-confirmation-bar { left: 16px; right: 16px; bottom: 84px; margin: 0 auto; }
+.tutorial-target-chat-fab { right: 24px; bottom: 90px; }
+@media (max-width: 640px) {
+  .tutorial-target-meal-grid, .tutorial-target-confirmation-bar { bottom: 120px; }
+  .tutorial-target-chat-fab { right: 16px; bottom: 110px; }
+}
+
 /* Meal history (Today tab) */
 .history-section { margin-top: 40px; }
 .history-section .page-heading { margin-bottom: 18px; }
@@ -268,3 +298,58 @@ header .brand small { color: var(--muted); }
 .history-meal { font-weight: 500; color: var(--ink); }
 .history-time { font-size: 12px; color: var(--muted); }
 @media (max-width: 640px) { .history-row { grid-template-columns: 1fr; gap: 4px; } }
+
+/* Slot selector (3 meals/day) */
+.slot-selector { display: flex; gap: 8px; margin: 0 0 20px; flex-wrap: wrap; }
+.slot-chip { background: rgba(255,253,248,.7); border: 1px solid var(--line); border-radius: 999px; padding: 8px 16px; font-size: 13px; font-weight: 500; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.slot-chip:hover { color: var(--ink); }
+.slot-chip.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+.slot-chip.has-plan .slot-tag { background: rgba(220,165,49,.18); color: var(--orange); font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 999px; text-transform: uppercase; }
+.slot-chip.confirmed .slot-tag.done { background: rgba(94,140,90,.18); color: #4f7a3f; }
+.slot-chip.active .slot-tag { background: rgba(255,255,255,.2); color: #fff; }
+
+/* Custom inventory adder */
+.custom-adder-trigger { margin-top: 20px; display: flex; justify-content: center; }
+.custom-adder { margin-top: 20px; background: var(--card); border: 1px solid #e5ddd1; border-radius: 18px; padding: 20px; }
+.custom-adder h3 { font-size: 18px; margin: 0 0 4px; }
+.custom-adder p { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+.custom-adder-grid { display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 12px; }
+.custom-adder-grid label { display: flex; flex-direction: column; gap: 4px; }
+.custom-adder-grid label span { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+.custom-adder-grid input, .custom-adder-grid select { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: #fff; font-size: 14px; }
+.custom-adder-actions { display: flex; gap: 10px; margin-top: 16px; }
+@media (max-width: 640px) { .custom-adder-grid { grid-template-columns: 1fr 1fr; } }
+
+/* Custom inventory item styling */
+.stock-card.custom { background: rgba(220,165,49,.04); border-color: rgba(220,165,49,.25); }
+.stock-actions .remove-item { color: var(--red); opacity: 0.6; }
+.stock-actions .remove-item:hover { opacity: 1; }
+
+/* Order list editor (F7) */
+.order-card .remove-item { color: var(--red); margin-left: 8px; opacity: 0.6; }
+.order-card .remove-item:hover { opacity: 1; }
+.order-edit-actions { display: flex; gap: 8px; margin-top: 12px; }
+.add-custom-row { display: flex; gap: 6px; margin-top: 10px; align-items: center; flex-wrap: wrap; }
+.add-custom-row input { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; }
+.add-custom-row input.qty { width: 70px; }
+.add-custom-row select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; background: #fff; }
+.add-custom-row button { padding: 6px 12px; font-size: 12px; }
+.add-custom-row button.mini { padding: 4px 10px; font-size: 12px; }
+
+/* Confirmation bar with dish editor (F9) */
+.confirmation-bar { padding: 16px 20px; background: var(--ink); color: #fff; border-radius: 16px; display: flex; flex-direction: column; gap: 12px; position: sticky; bottom: 80px; z-index: 50; }
+.confirmation-main { display: flex; align-items: center; gap: 14px; }
+.confirmation-detail { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.confirmation-detail b { font-size: 16px; }
+.confirmation-detail small { color: rgba(255,255,255,.7); font-size: 11px; }
+.confirmation-detail .confirmation-edit-hint { margin-top: 4px; }
+.confirmation-detail .link-button { background: transparent; border: none; color: rgba(255,255,255,.85); font-size: 12px; cursor: pointer; padding: 0; text-decoration: underline; font-family: inherit; }
+.confirmation-detail .link-button:hover { color: #fff; }
+.dish-editor { background: rgba(255,255,255,.06); border-radius: 10px; padding: 10px 12px; max-height: 200px; overflow-y: auto; }
+.dish-toggle { display: flex; gap: 10px; align-items: flex-start; padding: 6px 4px; cursor: pointer; }
+.dish-toggle.excluded { opacity: 0.45; text-decoration: line-through; }
+.dish-toggle.excluded em { font-size: 10px; color: rgba(255,200,200,.85); font-style: normal; margin-left: 4px; }
+.dish-toggle input { margin-top: 4px; }
+.dish-toggle span b { display: block; font-size: 13px; color: #fff; }
+.dish-toggle span small { color: rgba(255,255,255,.6); font-size: 11px; }
+.confirmation-bar button.primary:disabled { opacity: 0.4; cursor: not-allowed; }

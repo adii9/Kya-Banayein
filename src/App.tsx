@@ -71,6 +71,135 @@ function speak(text: string, lang: string) {
   window.speechSynthesis.speak(utter)
 }
 
+function CustomInventoryAdder({ householdId, onAdd }: { householdId: string | null; onAdd: (item: any) => void }) {
+  const [open, setOpen] = useState(false)
+  const [name, setName] = useState('')
+  const [quantity, setQuantity] = useState('500')
+  const [unit, setUnit] = useState('g')
+  const [category, setCategory] = useState<'weekly' | 'monthly'>('weekly')
+  const [busy, setBusy] = useState(false)
+  if (!householdId) return null
+  const submit = async () => {
+    const q = parseFloat(quantity)
+    if (!name.trim() || isNaN(q) || q <= 0) return
+    setBusy(true)
+    try {
+      const { id } = await api.addCustomInventoryItem(householdId, { name: name.trim(), quantity: q, unit, category })
+      onAdd({ id, name: name.trim(), quantity: q, unit, category, reorderAt: Math.max(1, Math.floor(q * 0.5)), targetStock: q, custom: true })
+      setName(''); setQuantity('500'); setUnit('g'); setCategory('weekly')
+      setOpen(false)
+    } catch (e: any) {
+      console.error('Add custom item failed:', e)
+      alert('Could not add that item. Try again.')
+    } finally { setBusy(false) }
+  }
+  if (!open) return <div className="custom-adder-trigger"><button className="secondary" onClick={() => setOpen(true)}><Plus size={16} /> Add custom item</button></div>
+  return <div className="custom-adder">
+    <h3>Add custom item</h3>
+    <p>Use this for ingredients we don't ship by default — methi, tofu, mushrooms, special masalas, etc.</p>
+    <div className="custom-adder-grid">
+      <label><span>Name</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Methi leaves" autoFocus /></label>
+      <label><span>Quantity</span><input type="number" min="0" value={quantity} onChange={(e) => setQuantity(e.target.value)} /></label>
+      <label><span>Unit</span>
+        <select value={unit} onChange={(e) => setUnit(e.target.value)}>
+          <option value="g">grams (g)</option>
+          <option value="kg">kilograms (kg)</option>
+          <option value="ml">millilitres (ml)</option>
+          <option value="l">litres (l)</option>
+          <option value="pcs">pieces</option>
+        </select>
+      </label>
+      <label><span>Category</span>
+        <select value={category} onChange={(e) => setCategory(e.target.value as 'weekly' | 'monthly')}>
+          <option value="weekly">Fresh · weekly</option>
+          <option value="monthly">Staple · monthly</option>
+        </select>
+      </label>
+    </div>
+    <div className="custom-adder-actions">
+      <button className="primary" disabled={busy} onClick={submit}>{busy ? 'Adding…' : 'Add to kitchen'}</button>
+      <button className="reset-button" disabled={busy} onClick={() => setOpen(false)}>Cancel</button>
+    </div>
+  </div>
+}
+
+function OrderListEditor({ title, subtitle, baseItems, slot, householdId, customItems, onChange, shareText, onShare, empty }: {
+  title: string
+  subtitle: string
+  baseItems: { id: string; name: string; quantity: number; unit: string }[]
+  slot: 'weekly' | 'monthly'
+  householdId: string
+  customItems: { id: string; name: string; quantity: number; unit: string }[]
+  onChange: () => void
+  shareText: string
+  onShare: (text: string) => void
+  empty: string
+}) {
+  // Combine base + custom, then subtract removed. Persists to order_overrides.
+  const [removed, setRemoved] = useState<Set<string>>(new Set())
+  const [adding, setAdding] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [newQty, setNewQty] = useState('500')
+  const [newUnit, setNewUnit] = useState('g')
+  const [busy, setBusy] = useState(false)
+
+  // Load existing overrides on mount.
+  useEffect(() => {
+    let cancelled = false
+    api.fetchOrderOverrides(householdId).then((rows) => {
+      if (cancelled) return
+      const removedIds = new Set<string>()
+      rows.forEach((r) => { if (r.slot === slot && r.action === 'remove' && r.inventory_id) removedIds.add(r.inventory_id) })
+      setRemoved(removedIds)
+    })
+    return () => { cancelled = true }
+  }, [householdId, slot])
+
+  const items = [
+    ...baseItems.filter((b) => !removed.has(b.id)),
+    ...customItems,
+  ]
+  const remove = async (id: string) => {
+    if (!window.confirm(`Remove ${items.find((i) => i.id === id)?.name ?? 'item'} from this list?`)) return
+    setBusy(true)
+    try {
+      await api.addOrderOverride({ household_id: householdId, slot, inventory_id: id, custom_name: null, custom_quantity: null, custom_unit: null, custom_category: null, action: 'remove' })
+      setRemoved((prev) => new Set(prev).add(id))
+      onChange()
+    } finally { setBusy(false) }
+  }
+  const addCustom = async () => {
+    const q = parseFloat(newQty)
+    if (!newName.trim() || isNaN(q) || q <= 0) return
+    setBusy(true)
+    try {
+      await api.addOrderOverride({ household_id: householdId, slot, inventory_id: null, custom_name: newName.trim(), custom_quantity: q, custom_unit: newUnit, custom_category: slot, action: 'add' })
+      onChange()
+      setNewName(''); setNewQty('500'); setNewUnit('g'); setAdding(false)
+    } finally { setBusy(false) }
+  }
+  return <article className="order-card">
+    <div className="order-head"><div><h2>{title}</h2><p>{subtitle}</p></div><span>{items.length}</span></div>
+    {items.length === 0 ? <div className="empty-state"><Check size={22} />{empty}</div>
+      : <ul>{items.map((item) => <li key={item.id}>
+          <label><input type="checkbox" checked /><span><b>{item.name}</b><small>Bring stock back to target</small></span></label>
+          <strong>{item.quantity.toLocaleString()} {item.unit}</strong>
+          {baseItems.find((b) => b.id === item.id) && <button className="remove-item" aria-label={`Remove ${item.name}`} disabled={busy} onClick={() => remove(item.id)}><X size={14} /></button>}
+        </li>)}</ul>}
+    {adding ? <div className="add-custom-row">
+        <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Item name" autoFocus />
+        <input type="number" min="0" value={newQty} onChange={(e) => setNewQty(e.target.value)} className="qty" />
+        <select value={newUnit} onChange={(e) => setNewUnit(e.target.value)}>
+          <option value="g">g</option><option value="kg">kg</option><option value="ml">ml</option><option value="l">l</option><option value="pcs">pcs</option>
+        </select>
+        <button className="primary mini" disabled={busy} onClick={addCustom}>Add</button>
+        <button className="reset-button mini" onClick={() => setAdding(false)}>Cancel</button>
+      </div>
+      : <div className="order-edit-actions"><button className="secondary mini" onClick={() => setAdding(true)}><Plus size={14} /> Add to this list</button></div>}
+    {items.length > 0 && <button className="secondary" onClick={() => onShare(shareText)}><Share2 size={17} /> Share list on WhatsApp</button>}
+  </article>
+}
+
 function SignIn() {
   const signInWithGoogle = async () => {
     // Always redirect back to the canonical app URL. Using
@@ -94,6 +223,50 @@ function SignIn() {
         Continue with Google
       </button>
       <small>By continuing, you agree to save your household data on Supabase.</small>
+    </div>
+  </div>
+}
+
+function TutorialOverlay({ step, totalSteps, onNext, onSkip }: {
+  step: number
+  totalSteps: number
+  onNext: () => void
+  onSkip: () => void
+}) {
+  // Three steps. Each is a small "tip" card pinned to a corner of the
+  // screen so the user can still see the UI behind it. The card has a
+  // back-arrow on step 2+, a Next button, and a Skip link.
+  const TIPS = [
+    {
+      title: 'Pick a meal you like',
+      body: 'Tap any meal card below. We show you 3 options by default — change the count with the steppers above.',
+      target: 'meal-grid',
+      cta: 'Got it',
+    },
+    {
+      title: 'Confirm to update your kitchen',
+      body: 'When you tap "Confirm meal & use stock", we deduct the ingredients from your kitchen. No more guessing what you have.',
+      target: 'confirmation-bar',
+      cta: 'Next',
+    },
+    {
+      title: 'Try the assistant',
+      body: 'Tap the chat bubble (bottom-right) to say things like "5 options दिखाओ" or "मैं शाकाहारी हूँ" — it learns your preferences.',
+      target: 'chat-fab',
+      cta: 'Done',
+    },
+  ]
+  const t = TIPS[Math.min(step, TIPS.length - 1)]
+  return <div className="tutorial-overlay" role="dialog" aria-label="Getting started">
+    <div className={`tutorial-tip tutorial-target-${t.target}`}>
+      <span className="tutorial-progress">Step {step + 1} of {totalSteps}</span>
+      <h3>{t.title}</h3>
+      <p>{t.body}</p>
+      <div className="tutorial-actions">
+        {step > 0 && <button className="reset-button" onClick={() => { /* back handled by parent via onNext with step-1 */ }} aria-label="Back">← Back</button>}
+        <button className="reset-button" onClick={onSkip}>Skip tour</button>
+        <button className="primary" onClick={onNext}>{t.cta}</button>
+      </div>
     </div>
   </div>
 }
@@ -198,10 +371,19 @@ function App() {
   const todayLabel = `${weekday} ${mealOfDay}`
   const greeting = hour < 11 ? 'Subah ka kya banayein?' : hour < 16 ? 'Dopahar ka kya banayein?' : 'Shaam ka kya banayein?'
   const mealNoun = mealOfDay === 'BREAKFAST' ? "Today's breakfast" : mealOfDay === 'LUNCH' ? "Today's lunch" : mealOfDay === 'SNACKS' ? "Today's snacks" : "Tonight's dinner"
+  const todayKey = now.toISOString().slice(0, 10)
   const [preferences, setPreferences] = useState(() => load('kya-preferences', DEFAULT_PREFERENCES))
   const [inventory, setInventory] = useState<InventoryItem[]>(() => load('kya-inventory', DEFAULT_INVENTORY))
+  // Order list customisations (loaded fresh on each refresh of orderVersion).
+  const [, setOrderVersion] = useState(0)
+  const [customOrderItems, setCustomOrderItems] = useState<{ weekly: { id: string; name: string; quantity: number; unit: string }[]; monthly: { id: string; name: string; quantity: number; unit: string }[] }>({ weekly: [], monthly: [] })
   const [selected, setSelected] = useState<MealOption | null>(null)
   const [confirmed, setConfirmed] = useState<string | null>(null)
+  // Dishes the user has toggled out of the currently-selected meal. Reset
+  // when a new meal is chosen. Affects the confirmation: only non-excluded
+  // dishes' ingredients are deducted from inventory and recorded in history.
+  const [excludedDishes, setExcludedDishes] = useState<Set<string>>(new Set())
+  const [showDishEditor, setShowDishEditor] = useState(false)
   const [chatOpen, setChatOpen] = useState(false)
   const [chat, setChat] = useState<ChatTurn[]>([
     { from: 'bot', text: 'Namaste! Apni bhasha mein bolo — "मैं शाकाहारी हूँ", "৫ টা suggestion দাও", ya "we are 6 people". Main settings update kar dunga.' },
@@ -217,6 +399,21 @@ function App() {
   const [voterIndex, setVoterIndex] = useState<Record<string, string>>({})
   const [votesToday, setVotesToday] = useState<Record<string, string>>({})
   const [mealHistory, setMealHistory] = useState<api.MealHistoryRow[]>([])
+  // Day plan: 3 slots per day, each with an optional meal plan.
+  const [mealPlansByDate, setMealPlansByDate] = useState<Record<string, api.MealPlan[]>>({})
+  const [selectedSlot, setSelectedSlot] = useState<api.MealSlot>('DINNER')
+  // First-time-user tutorial. Triggers when the user has completed onboarding
+  // but hasn't confirmed a meal yet and hasn't dismissed the tour. Persisted
+  // in localStorage so a refresh doesn't restart the tutorial. Three short
+  // steps: pick a meal, confirm to update inventory, try the chat.
+  const [tutorialStep, setTutorialStep] = useState<number | null>(() => {
+    if (typeof window === 'undefined') return null
+    try {
+      const done = localStorage.getItem('kya-tutorial-done')
+      if (done) return null
+      return 0
+    } catch { return null }
+  })
   // Pending join request from a shared ?join=... link. Set on mount if
   // the URL has a join code; cleared once the user joins or dismisses.
   const [pendingJoin, setPendingJoin] = useState<{ code: string; household?: { id: string; name: string } } | null>(null)
@@ -261,15 +458,22 @@ function App() {
         if (!hh.join_code) {
           api.generateAndSetJoinCode(hh).then((updated) => setHousehold(updated)).catch((e) => console.warn('Could not generate join code', e))
         }
-        const [inv, voters, votes, history] = await Promise.all([
+        const [inv, voters, votes, history, overrides, plans] = await Promise.all([
           api.fetchInventory(hh.id),
           api.fetchVoters(hh.id),
           api.fetchVotesToday(hh.id),
           api.fetchMealHistory(hh.id, 7),
+          api.fetchOrderOverrides(hh.id),
+          api.fetchMealPlansForDay(hh.id, new Date().toISOString().slice(0, 10)),
         ])
         if (cancelled) return
         setInventory(inv)
         setMealHistory(history)
+        setCustomOrderItems({
+          weekly: overrides.filter((o) => o.slot === 'weekly' && o.action === 'add').map((o) => ({ id: o.id, name: o.custom_name ?? '', quantity: o.custom_quantity ?? 0, unit: o.custom_unit ?? 'g' })),
+          monthly: overrides.filter((o) => o.slot === 'monthly' && o.action === 'add').map((o) => ({ id: o.id, name: o.custom_name ?? '', quantity: o.custom_quantity ?? 0, unit: o.custom_unit ?? 'g' })),
+        })
+        setMealPlansByDate({ [new Date().toISOString().slice(0, 10)]: plans })
         const idx: Record<string, string> = {}
         voters.forEach((v) => { idx[v.name] = v.id })
         setVoterIndex(idx)
@@ -309,16 +513,43 @@ function App() {
     return getResults(poll)
   }, [voterIndex, votesToday])
 
-  const chooseMeal = (meal: MealOption) => { setSelected(meal); setConfirmed(null) }
+  const chooseMeal = (meal: MealOption) => {
+    setSelected(meal)
+    setConfirmed(null)
+    setExcludedDishes(new Set())  // reset exclusions on a new meal
+    // Optimistically upsert the plan for the current slot so the slot chip
+    // flips to 'Planned' immediately. The real upsert happens in confirm().
+    if (household) {
+      api.upsertMealPlan(household.id, todayKey, selectedSlot, meal.id).then((plan) => {
+        setMealPlansByDate((prev) => ({ ...prev, [todayKey]: [...(prev[todayKey] ?? []).filter((p) => p.slot !== selectedSlot), plan] }))
+      }).catch((e) => console.error('Plan upsert failed:', e))
+    }
+  }
   const confirm = async () => {
     if (!selected) return
-    const next = confirmMeal(inventory, selected.dishes.flatMap((dish) => dish.ingredients))
+    const effectiveDishes = selected.dishes.filter((d) => !excludedDishes.has(d.id))
+    if (effectiveDishes.length === 0) {
+      alert('You\'ve excluded every dish from this meal. Add at least one back before confirming.')
+      return
+    }
+    const next = confirmMeal(inventory, effectiveDishes.flatMap((dish) => dish.ingredients))
     setInventory(next)
     setConfirmed(selected.id)
+    // First confirmed meal → tutorial done.
+    if (tutorialStep !== null) {
+      localStorage.setItem('kya-tutorial-done', '1')
+      setTutorialStep(null)
+    }
     if (household) {
       try {
         await Promise.all(next.map((i) => api.updateInventoryItem(i.id, i.quantity)))
-        await api.recordMeal(household.id, selected.id, selected.dishes)
+        await api.recordMeal(household.id, selected.id, effectiveDishes)
+        // Mark the per-slot plan as confirmed.
+        await api.confirmMealPlan(household.id, todayKey, selectedSlot)
+        setMealPlansByDate((prev) => {
+          const existing = prev[todayKey] ?? []
+          return { ...prev, [todayKey]: existing.map((p) => p.slot === selectedSlot ? { ...p, confirmed_at: new Date().toISOString() } : p) }
+        })
         // Refresh the history so the new meal shows up immediately.
         api.fetchMealHistory(household.id, 7).then(setMealHistory).catch(() => {})
       } catch (e) { console.error('Confirm sync failed:', e) }
@@ -362,6 +593,44 @@ function App() {
       if (intent.like) {
         return `Accha, ${intent.like} pasand hai. Note kar liya.`
       }
+    }
+    // F3 — chat-driven inventory updates. Match the item name against
+    // existing inventory (substring), then either add or subtract the
+    // quantity. If the item doesn't exist, fall through to "add custom".
+    if (intent.kind === 'inventory' && household) {
+      const lc = intent.itemName.toLowerCase()
+      const existing = inventory.find((i) => i.name.toLowerCase().includes(lc) || lc.includes(i.name.toLowerCase()))
+      const delta = intent.action === 'add' ? intent.quantity : -intent.quantity
+      if (existing) {
+        const newQty = Math.max(0, existing.quantity + delta)
+        const updated = inventory.map((i) => i.id === existing.id ? { ...i, quantity: newQty } : i)
+        setInventory(updated)
+        api.updateInventoryItem(existing.id, newQty).catch((e) => console.error('Inventory update failed:', e))
+        return `${intent.action === 'add' ? 'Added' : 'Used'} ${intent.quantity} ${intent.unit} of ${existing.name}. Now ${newQty} ${existing.unit} in stock.`
+      } else if (intent.action === 'add') {
+        // No match — create a custom item.
+        api.addCustomInventoryItem(household.id, { name: intent.itemName.charAt(0).toUpperCase() + intent.itemName.slice(1), quantity: intent.quantity, unit: intent.unit, category: 'weekly' }).then(({ id }) => {
+          setInventory([...inventory, { id, name: intent.itemName, quantity: intent.quantity, unit: intent.unit, category: 'weekly', reorderAt: Math.max(1, Math.floor(intent.quantity * 0.5)), targetStock: intent.quantity, custom: true } as any])
+        }).catch((e) => console.error('Add custom item failed:', e))
+        return `Added ${intent.quantity} ${intent.unit} of new item "${intent.itemName}" to your kitchen.`
+      } else {
+        return `I don't see ${intent.itemName} in your kitchen. Try adding it first, or use the kitchen tab.`
+      }
+    }
+    // F2/F4 — plan a slot. Find the dish in the meal options, persist the
+    // plan, switch the active slot to whatever the user asked for.
+    if (intent.kind === 'plan' && household) {
+      const lc = intent.dishName.toLowerCase()
+      // Build a 1-meal recommendation so we can match against dish names.
+      const recs = recommendMeals({ suggestionCount: 6, dishesPerMeal: 4, vegetarian: preferences.vegetarian }, inventory)
+      const matchMeal = recs.find((m) => m.dishes.some((d) => d.name.toLowerCase().includes(lc))) ?? recs[0]
+      if (!matchMeal) return `Couldn't build a meal with ${intent.dishName}. Try a different dish name.`
+      const matchedDish = matchMeal.dishes.find((d) => d.name.toLowerCase().includes(lc)) ?? matchMeal.dishes[0]
+      api.upsertMealPlan(household.id, todayKey, intent.slot, matchMeal.id).then((plan) => {
+        setMealPlansByDate((prev) => ({ ...prev, [todayKey]: [...(prev[todayKey] ?? []).filter((p) => p.slot !== intent.slot), plan] }))
+      }).catch((e) => console.error('Plan upsert failed:', e))
+      setSelectedSlot(intent.slot)
+      return `${intent.slot.charAt(0) + intent.slot.slice(1).toLowerCase()} plan set: ${matchedDish.name}${intent.mood ? ` (${intent.mood})` : ''}. Tap the chip to see suggestions.`
     }
     return intent.kind === 'unknown' ? intent.reply : 'Done.'
   }
@@ -481,12 +750,23 @@ function App() {
     <main>
       {tab === 'today' && <>
         <section className="hero-copy">
-          <div><span className="eyebrow"><Sparkles size={14} /> {todayLabel}</span><h1>{greeting}</h1><p>We found meals that fit your kitchen and your family.</p></div>
+          <div><span className="eyebrow"><Sparkles size={14} /> {todayLabel}</span><h1>{greeting}</h1><p>Plan breakfast, lunch, and dinner for today. Tap a meal to choose it, or use the chat to set preferences.</p></div>
           <div className="meal-controls">
             <label><span>Options to show</span><Counter value={preferences.suggestionCount} setValue={(suggestionCount) => setPreferences({ ...preferences, suggestionCount })} /></label>
             <label><span>Dishes per meal</span><Counter value={preferences.dishesPerMeal} setValue={(dishesPerMeal) => setPreferences({ ...preferences, dishesPerMeal })} /></label>
           </div>
         </section>
+
+        <div className="slot-selector">
+          {(['BREAKFAST', 'LUNCH', 'DINNER'] as const).map((s) => {
+            const plan = mealPlansByDate[todayKey]?.find((p) => p.slot === s)
+            return <button key={s} className={`slot-chip ${selectedSlot === s ? 'active' : ''} ${plan?.meal_id ? 'has-plan' : ''} ${plan?.confirmed_at ? 'confirmed' : ''}`} onClick={() => { setSelectedSlot(s); setSelected(null) }}>
+              <span className="slot-label">{s === 'BREAKFAST' ? 'Breakfast' : s === 'LUNCH' ? 'Lunch' : 'Dinner'}</span>
+              {plan?.meal_id && <span className="slot-tag">Planned</span>}
+              {plan?.confirmed_at && <span className="slot-tag done">Done</span>}
+            </button>
+          })}
+        </div>
 
         {voting.enabled && <section className="vote-panel">
           <div className="vote-head">
@@ -592,8 +872,32 @@ function App() {
         </section>}
 
         {selected && <section className="confirmation-bar">
-          <div><span className="mini-plate"><UtensilsCrossed size={20} /></span><span><small>{mealNoun}</small><b>{selected.dishes.map((dish) => dish.name).join(' + ')}</b></span></div>
-          {confirmed === selected.id ? <button className="confirmed"><Check size={18} /> Inventory updated</button> : <button className="primary" onClick={confirm}>Confirm meal & use stock <ChevronRight size={18} /></button>}
+          <div className="confirmation-main">
+            <span className="mini-plate"><UtensilsCrossed size={20} /></span>
+            <div className="confirmation-detail">
+              <small>{mealNoun}</small>
+              <b>{selected.dishes.filter((d) => !excludedDishes.has(d.id)).map((dish) => dish.name).join(' + ') || '(no dishes — pick at least one)'}</b>
+              <small className="confirmation-edit-hint"><button className="link-button" onClick={() => setShowDishEditor((v) => !v)}>{showDishEditor ? 'Hide' : 'Edit'} dishes ({selected.dishes.length})</button></small>
+            </div>
+          </div>
+          {showDishEditor && <div className="dish-editor">
+            {selected.dishes.map((d) => {
+              const excluded = excludedDishes.has(d.id)
+              return <label key={d.id} className={`dish-toggle ${excluded ? 'excluded' : ''}`}>
+                <input type="checkbox" checked={!excluded} onChange={(e) => {
+                  setExcludedDishes((prev) => {
+                    const next = new Set(prev)
+                    if (e.target.checked) next.delete(d.id)
+                    else next.add(d.id)
+                    return next
+                  })
+                }} />
+                <span><b>{d.name}</b><small>{d.description}</small></span>
+                {excluded && <em>won't be cooked</em>}
+              </label>
+            })}
+          </div>}
+          {confirmed === selected.id ? <button className="confirmed"><Check size={18} /> Inventory updated</button> : <button className="primary" onClick={confirm} disabled={selected.dishes.filter((d) => !excludedDishes.has(d.id)).length === 0}>Confirm meal & use stock <ChevronRight size={18} /></button>}
         </section>}
       </>}
 
@@ -601,22 +905,51 @@ function App() {
         <div className="page-heading"><span className="eyebrow"><Package size={14} /> YOUR KITCHEN</span><h1>Inventory</h1><p>Adjust what is actually available. Meal suggestions update immediately.</p></div>
         <div className="inventory-grid">{inventory.map((item) => {
           const percent = Math.min(100, Math.round((item.quantity / item.targetStock) * 100))
-          return <article className="stock-card" key={item.id}>
-            <div><span className={`stock-icon ${percent <= 25 ? 'danger' : ''}`}>{item.name.slice(0, 1)}</span><span><b>{item.name}</b><small>{item.category === 'weekly' ? 'Fresh · weekly' : 'Staple · monthly'}</small></span></div>
+          const isCustom = (item as any).custom === true
+          return <article className={`stock-card ${isCustom ? 'custom' : ''}`} key={item.id}>
+            <div><span className={`stock-icon ${percent <= 25 ? 'danger' : ''}`}>{item.name.slice(0, 1)}</span><span><b>{item.name}</b><small>{isCustom ? 'Custom' : item.category === 'weekly' ? 'Fresh · weekly' : 'Staple · monthly'}</small></span></div>
             <strong>{item.quantity.toLocaleString()} <small>{item.unit}</small></strong>
             <div className="stock-track"><i style={{ width: `${percent}%` }} /></div>
-            <div className="stock-actions"><button onClick={async () => { const next = inventory.map((x) => x.id === item.id ? { ...x, quantity: Math.max(0, x.quantity - (x.unit === 'pcs' ? 1 : 100)) } : x); setInventory(next); const it = next.find((x) => x.id === item.id); if (it) { try { await api.updateInventoryItem(it.id, it.quantity) } catch (e) { console.error(e) } } }}><Minus size={16} /></button><span>{percent}% stocked</span><button onClick={async () => { const next = inventory.map((x) => x.id === item.id ? { ...x, quantity: Math.min(x.targetStock, x.quantity + (x.unit === 'pcs' ? 1 : 100)) } : x); setInventory(next); const it = next.find((x) => x.id === item.id); if (it) { try { await api.updateInventoryItem(it.id, it.quantity) } catch (e) { console.error(e) } } }}><Plus size={16} /></button></div>
+            <div className="stock-actions">
+              <button onClick={async () => { const next = inventory.map((x) => x.id === item.id ? { ...x, quantity: Math.max(0, x.quantity - (x.unit === 'pcs' ? 1 : 100)) } : x); setInventory(next); const it = next.find((x) => x.id === item.id); if (it) { try { await api.updateInventoryItem(it.id, it.quantity) } catch (e) { console.error(e) } } }}><Minus size={16} /></button>
+              <span>{percent}% stocked</span>
+              <button onClick={async () => { const next = inventory.map((x) => x.id === item.id ? { ...x, quantity: Math.min(x.targetStock, x.quantity + (x.unit === 'pcs' ? 1 : 100)) } : x); setInventory(next); const it = next.find((x) => x.id === item.id); if (it) { try { await api.updateInventoryItem(it.id, it.quantity) } catch (e) { console.error(e) } } }}><Plus size={16} /></button>
+              {isCustom && <button className="remove-item" aria-label={`Remove ${item.name}`} onClick={async () => { if (!window.confirm(`Remove ${item.name} from your kitchen?`)) return; try { await api.deleteInventoryItem(item.id); setInventory(inventory.filter((x) => x.id !== item.id)) } catch (e) { console.error(e) } }}><X size={14} /></button>}
+            </div>
           </article>
         })}</div>
+        <CustomInventoryAdder householdId={household?.id ?? null} onAdd={(item) => setInventory([...inventory, item])} />
       </section>}
 
       {tab === 'orders' && <section className="page-section">
-        <div className="page-heading"><span className="eyebrow"><ShoppingBasket size={14} /> SMART REORDER</span><h1>What to buy</h1><p>Fresh food weekly. Pantry staples only when they run low.</p></div>
+        <div className="page-heading"><span className="eyebrow"><ShoppingBasket size={14} /> SMART REORDER</span><h1>What to buy</h1><p>Fresh food weekly. Pantry staples only when they run low. Click <X size={12} style={{ verticalAlign: 'middle' }} /> on any item to remove it, or add your own.</p></div>
         <div className="order-columns">
-          <OrderList title="Buy this week" subtitle="Fresh produce and dairy" items={orders.weekly} empty="Fresh stock looks good." shareText={groceryListText('Weekly fresh food', orders.weekly)} onShare={shareOnWhatsApp} />
-          <OrderList title="Monthly pantry order" subtitle="Staples below their threshold" items={orders.monthly} empty="Staples look good for the month." shareText={groceryListText('Monthly pantry', orders.monthly)} onShare={shareOnWhatsApp} />
+          {household ? <OrderListEditor
+            title="Buy this week"
+            subtitle="Fresh produce and dairy"
+            baseItems={orders.weekly}
+            customItems={customOrderItems.weekly}
+            slot="weekly"
+            householdId={household.id}
+            onChange={() => setOrderVersion((v) => v + 1)}
+            shareText={groceryListText('Weekly fresh food', [...orders.weekly, ...customOrderItems.weekly])}
+            onShare={shareOnWhatsApp}
+            empty="Fresh stock looks good."
+          /> : <OrderList title="Buy this week" subtitle="Fresh produce and dairy" items={orders.weekly} empty="Fresh stock looks good." shareText={groceryListText('Weekly fresh food', orders.weekly)} onShare={shareOnWhatsApp} />}
+          {household ? <OrderListEditor
+            title="Monthly pantry order"
+            subtitle="Staples below their threshold"
+            baseItems={orders.monthly}
+            customItems={customOrderItems.monthly}
+            slot="monthly"
+            householdId={household.id}
+            onChange={() => setOrderVersion((v) => v + 1)}
+            shareText={groceryListText('Monthly pantry', [...orders.monthly, ...customOrderItems.monthly])}
+            onShare={shareOnWhatsApp}
+            empty="Staples look good for the month."
+          /> : <OrderList title="Monthly pantry order" subtitle="Staples below their threshold" items={orders.monthly} empty="Staples look good for the month." shareText={groceryListText('Monthly pantry', orders.monthly)} onShare={shareOnWhatsApp} />}
         </div>
-        <div className="order-note"><Sparkles size={20} /><div><b>How this works</b><p>Confirming a meal deducts its ingredients. The order list uses your stock thresholds—not AI guesses—so quantities remain predictable.</p></div></div>
+        <div className="order-note"><Sparkles size={20} /><div><b>How this works</b><p>Confirming a meal deducts its ingredients. The order list uses your stock thresholds—not AI guesses—so quantities remain predictable. Your edits to this list are remembered.</p></div></div>
       </section>}
 
       {tab === 'household' && <section className="page-section settings-page">
@@ -672,6 +1005,23 @@ function App() {
       <button className={tab === 'orders' ? 'active' : ''} onClick={() => setTab('orders')}><span className="icon-wrap"><ShoppingBasket />{lowStock > 0 && <i>{lowStock}</i>}</span><span>Orders</span></button>
       <button className={tab === 'household' ? 'active' : ''} onClick={() => setTab('household')}><Settings2 /><span>Rules</span></button>
     </nav>
+    {tutorialStep !== null && tab === 'today' && <TutorialOverlay
+      step={tutorialStep}
+      totalSteps={3}
+      onNext={() => {
+        if (tutorialStep >= 2) {
+          // Last step's CTA is "Done" — finish the tour.
+          localStorage.setItem('kya-tutorial-done', '1')
+          setTutorialStep(null)
+        } else {
+          setTutorialStep(tutorialStep + 1)
+        }
+      }}
+      onSkip={() => {
+        localStorage.setItem('kya-tutorial-done', '1')
+        setTutorialStep(null)
+      }}
+    />}
   </div>
 }
 
