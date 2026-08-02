@@ -681,6 +681,7 @@ function DislikesSection({ dislikes, onRemove, onAdd }: {
       <p>Tagged dishes won't be suggested. Add a slot if the dislike only applies to a specific meal.</p>
     </div>
     <ul className="dislike-chips">
+      {dislikes.length === 0 && <li className="dislike-empty">No dislikes yet. Try the chat: "no rajma for dinner".</li>}
       {dislikes.map((d, i) => <li key={`${d.name}-${i}`} className="dislike-chip">
         <span className="dislike-name">{d.name}</span>
         {d.slot && <span className="dislike-slot-pill">{d.slot.toLowerCase()}</span>}
@@ -1215,7 +1216,7 @@ function App() {
           })}
         </section>
 
-        {preferences.dislikes.length > 0 && <DislikesSection
+        {tab === 'today' && <DislikesSection
           dislikes={preferences.dislikes}
           onRemove={(i) => setPreferences((p) => ({ ...p, dislikes: p.dislikes.filter((_, j) => j !== i) }))}
           onAdd={(name, slot) => setPreferences((p) => {

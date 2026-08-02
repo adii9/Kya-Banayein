@@ -413,6 +413,7 @@ header .brand small { color: var(--muted); }
 .dislikes-section .page-heading h2 { font-size: 22px; margin: 4px 0; }
 .dislikes-section .page-heading p { color: var(--muted); font-size: 13px; margin: 0; }
 .dislike-chips { list-style: none; padding: 0; margin: 0 0 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+.dislike-empty { color: var(--muted); font-size: 13px; font-style: italic; padding: 8px 0; }
 .dislike-chip { display: inline-flex; align-items: center; gap: 6px; background: rgba(180,80,60,.08); border: 1px solid rgba(180,80,60,.25); border-radius: 999px; padding: 3px 8px 3px 12px; font-size: 13px; color: var(--ink); }
 .dislike-chip .dislike-slot-pill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--red); background: rgba(180,80,60,.12); padding: 1px 6px; border-radius: 999px; font-style: normal; }
 .dislike-chip button { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 0; display: inline-flex; align-items: center; }
