@@ -156,3 +156,127 @@ export const generateAndSetJoinCode = async (hh: Household): Promise<Household> 
   }
   throw new Error('Could not generate a unique join code after 5 attempts')
 }
+
+// ============================================================================
+// Features v1 — meal plans, custom inventory, order overrides, voter prefs
+// ============================================================================
+
+export type MealSlot = 'BREAKFAST' | 'LUNCH' | 'DINNER'
+
+export type MealPlan = {
+  id: string
+  household_id: string
+  plan_date: string  // ISO date 'YYYY-MM-DD'
+  slot: MealSlot
+  meal_id: string | null
+  confirmed_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export const fetchMealPlansForDay = async (householdId: string, isoDate: string): Promise<MealPlan[]> => {
+  const { data, error } = await table('meal_plans')
+    .select('*')
+    .eq('household_id', householdId)
+    .eq('plan_date', isoDate)
+  if (error) throw error
+  return (data ?? []) as MealPlan[]
+}
+
+export const upsertMealPlan = async (householdId: string, isoDate: string, slot: MealSlot, mealId: string | null) => {
+  const { data, error } = await table('meal_plans')
+    .upsert({ household_id: householdId, plan_date: isoDate, slot, meal_id: mealId, updated_at: new Date().toISOString() }, { onConflict: 'household_id,plan_date,slot' })
+    .select('*')
+  if (error) throw error
+  return data?.[0] as MealPlan
+}
+
+export const confirmMealPlan = async (householdId: string, isoDate: string, slot: MealSlot) => {
+  const { error } = await table('meal_plans')
+    .update({ confirmed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq('household_id', householdId)
+    .eq('plan_date', isoDate)
+    .eq('slot', slot)
+  if (error) throw error
+}
+
+// Custom inventory items are user-added entries that don't match the seed
+// ingredient IDs. They're deletable, editable like any other inventory row,
+// and carry custom=true so the UI can render a delete button on them.
+export const addCustomInventoryItem = async (householdId: string, item: { name: string; quantity: number; unit: string; category: 'weekly' | 'monthly'; reorderAt?: number; targetStock?: number }): Promise<{ id: string }> => {
+  const row = { household_id: householdId, name: item.name, quantity: item.quantity, unit: item.unit, category: item.category, reorder_at: item.reorderAt ?? Math.max(1, Math.floor(item.quantity * 0.5)), target_stock: item.targetStock ?? item.quantity, custom: true }
+  const { data, error } = await table('inventory_items').insert(row).select('id').single()
+  if (error) throw error
+  return data as { id: string }
+}
+
+export const deleteInventoryItem = async (id: string) => {
+  const { error } = await table('inventory_items').delete().eq('id', id)
+  if (error) throw error
+}
+
+export type OrderOverride = {
+  id: string
+  household_id: string
+  slot: 'weekly' | 'monthly'
+  inventory_id: string | null
+  custom_name: string | null
+  custom_quantity: number | null
+  custom_unit: string | null
+  custom_category: 'weekly' | 'monthly' | null
+  action: 'add' | 'remove'
+  created_at: string
+}
+
+export const fetchOrderOverrides = async (householdId: string): Promise<OrderOverride[]> => {
+  const { data, error } = await table('order_overrides').select('*').eq('household_id', householdId)
+  if (error) throw error
+  return (data ?? []) as OrderOverride[]
+}
+
+export const addOrderOverride = async (o: Omit<OrderOverride, 'id' | 'created_at'>) => {
+  const { error } = await table('order_overrides').insert(o)
+  if (error) throw error
+}
+
+export const deleteOrderOverride = async (id: string) => {
+  const { error } = await table('order_overrides').delete().eq('id', id)
+  if (error) throw error
+}
+
+export type VoterMealPreference = {
+  id: string
+  voter_id: string
+  slot: MealSlot | null
+  day_of_week: number | null
+  meal_name: string | null
+  mood: string | null
+  strength: number
+  created_at: string
+}
+
+export const fetchVoterPreferences = async (voterId: string): Promise<VoterMealPreference[]> => {
+  const { data, error } = await table('voter_meal_preferences').select('*').eq('voter_id', voterId)
+  if (error) throw error
+  return (data ?? []) as VoterMealPreference[]
+}
+
+export const fetchHouseholdPreferences = async (householdId: string): Promise<VoterMealPreference[]> => {
+  // Get all voters in the household, then union their preferences.
+  const voters = await fetchVoters(householdId)
+  const voterIds = voters.map((v) => v.id)
+  if (voterIds.length === 0) return []
+  const { data, error } = await table('voter_meal_preferences').select('*').in('voter_id', voterIds)
+  if (error) throw error
+  return (data ?? []) as VoterMealPreference[]
+}
+
+export const addVoterPreference = async (pref: Omit<VoterMealPreference, 'id' | 'created_at'>) => {
+  const { error } = await table('voter_meal_preferences').insert(pref)
+  if (error) throw error
+}
+
+export const deleteVoterPreference = async (id: string) => {
+  const { error } = await table('voter_meal_preferences').delete().eq('id', id)
+  if (error) throw error
+}
