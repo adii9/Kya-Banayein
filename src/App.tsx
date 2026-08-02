@@ -8,6 +8,7 @@ import { addVoter as _addVoter, buildWhatsAppShareUrl, castVote as _castVote, cr
 import { supabase, SUPABASE_URL } from './supabase'
 import * as api from './api'
 import { KITCHEN_GROUPS, type KitchenTemplateItem } from './kitchenTemplate'
+import type { Dislike } from './api'
 
 type Tab = 'today' | 'inventory' | 'orders' | 'family' | 'household' | 'onboarding' | 'join'
 
@@ -17,7 +18,7 @@ type Preferences = {
   suggestionCount: number
   dishesPerMeal: number
   vegetarian: boolean
-  dislikes: string[]
+  dislikes: Dislike[]  // rich structure; see api.Dislike
 }
 
 type ChatTurn = { from: 'user' | 'bot'; text: string; intent?: ChatIntent }
@@ -38,6 +39,40 @@ const DEFAULT_PREFERENCES: Preferences = {
 }
 
 const DEFAULT_VOTING: VotingState = { enabled: false, poll: createPoll([]), shareAll: true }
+
+// Migrations: older versions of the app stored dislikes as a flat
+// string[]. The new schema is Dislike[] (with optional slot / dayOfWeek).
+// On load, convert any old shape to the new one so existing users
+// don't lose their data.
+const migratePreferences = (p: any): Preferences => {
+  if (!p || typeof p !== 'object') return DEFAULT_PREFERENCES
+  const raw = p.dislikes
+  let dislikes: Dislike[]
+  if (Array.isArray(raw)) {
+    if (raw.length === 0) dislikes = []
+    else if (typeof raw[0] === 'string') {
+      // Old shape: string[]
+      dislikes = (raw as string[]).filter((s) => typeof s === 'string' && s.length > 0).map((s) => ({ name: s }))
+    } else {
+      // Already Dislike[] but maybe malformed; keep what's well-formed
+      dislikes = (raw as any[]).filter((d) => d && typeof d.name === 'string' && d.name.length > 0).map((d) => ({
+        name: d.name,
+        slot: d.slot ?? null,
+        dayOfWeek: typeof d.dayOfWeek === 'number' ? d.dayOfWeek : null,
+      }))
+    }
+  } else {
+    dislikes = []
+  }
+  return {
+    familyName: typeof p.familyName === 'string' ? p.familyName : 'My Kitchen',
+    members: typeof p.members === 'number' ? p.members : 4,
+    suggestionCount: typeof p.suggestionCount === 'number' ? p.suggestionCount : 3,
+    dishesPerMeal: typeof p.dishesPerMeal === 'number' ? p.dishesPerMeal : 3,
+    vegetarian: typeof p.vegetarian === 'boolean' ? p.vegetarian : false,
+    dislikes,
+  }
+}
 
 const load = <T,>(key: string, fallback: T): T => {
   try { return JSON.parse(localStorage.getItem(key) ?? '') as T } catch { return fallback }
@@ -617,6 +652,55 @@ function KitchenOnboarding({ session, onComplete }: { session: Session; onComple
   return null
 }
 
+// =============================================================================
+// DislikesSection — Phase 3 (Today tab)
+// Inline "things you don't eat" editor. Lets the user add a new dislike
+// with an optional slot, and remove existing ones. Mirrors the chat
+// command: "no rajma for dinner" writes the same shape.
+// =============================================================================
+function DislikesSection({ dislikes, onRemove, onAdd }: {
+  dislikes: Dislike[]
+  onRemove: (index: number) => void
+  onAdd: (name: string, slot: 'BREAKFAST' | 'LUNCH' | 'DINNER' | null) => void
+}) {
+  const [adding, setAdding] = useState(false)
+  const [name, setName] = useState('')
+  const [slot, setSlot] = useState<'BREAKFAST' | 'LUNCH' | 'DINNER' | ''>('')
+  const submit = () => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    onAdd(trimmed, slot === '' ? null : slot)
+    setName('')
+    setSlot('')
+    setAdding(false)
+  }
+  return <section className="dislikes-section">
+    <div className="page-heading">
+      <span className="eyebrow"><X size={14} /> THINGS YOU DON'T EAT</span>
+      <h2>Dislikes</h2>
+      <p>Tagged dishes won't be suggested. Add a slot if the dislike only applies to a specific meal.</p>
+    </div>
+    <ul className="dislike-chips">
+      {dislikes.map((d, i) => <li key={`${d.name}-${i}`} className="dislike-chip">
+        <span className="dislike-name">{d.name}</span>
+        {d.slot && <span className="dislike-slot-pill">{d.slot.toLowerCase()}</span>}
+        <button onClick={() => onRemove(i)} aria-label={`Remove ${d.name}`}><X size={12} /></button>
+      </li>)}
+    </ul>
+    {adding ? <div className="dislike-add-row">
+      <input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') { setAdding(false); setName('') } }} placeholder="e.g. rajma" />
+      <select value={slot} onChange={(e) => setSlot(e.target.value as any)}>
+        <option value="">any meal</option>
+        <option value="BREAKFAST">breakfast only</option>
+        <option value="LUNCH">lunch only</option>
+        <option value="DINNER">dinner only</option>
+      </select>
+      <button className="primary mini" onClick={submit} disabled={!name.trim()}>Add</button>
+      <button className="reset-button mini" onClick={() => { setAdding(false); setName('') }}>Cancel</button>
+    </div> : <button className="dislike-add-btn" onClick={() => setAdding(true)}><Plus size={12} /> Add dislike</button>}
+  </section>
+}
+
 function App() {
   const [session, setSession] = useState<Session | null>(null)
   const [household, setHousehold] = useState<api.Household | null>(null)
@@ -633,7 +717,7 @@ function App() {
   const greeting = hour < 11 ? 'Subah ka kya banayein?' : hour < 16 ? 'Dopahar ka kya banayein?' : 'Shaam ka kya banayein?'
   const mealNoun = mealOfDay === 'BREAKFAST' ? "Today's breakfast" : mealOfDay === 'LUNCH' ? "Today's lunch" : mealOfDay === 'SNACKS' ? "Today's snacks" : "Tonight's dinner"
   const todayKey = now.toISOString().slice(0, 10)
-  const [preferences, setPreferences] = useState(() => load('kya-preferences', DEFAULT_PREFERENCES))
+  const [preferences, setPreferences] = useState<Preferences>(() => migratePreferences(load('kya-preferences', DEFAULT_PREFERENCES)))
   const [inventory, setInventory] = useState<InventoryItem[]>(() => load('kya-inventory', DEFAULT_INVENTORY))
   // Order list customisations (loaded fresh on each refresh of orderVersion).
   const [, setOrderVersion] = useState(0)
@@ -746,7 +830,7 @@ function App() {
         const vmap: Record<string, string> = {}
         votes.forEach((v) => { vmap[v.voter_id] = v.meal_id })
         setVotesToday(vmap)
-        setPreferences((p) => ({ ...p, familyName: hh.name, members: hh.members, vegetarian: hh.vegetarian }))
+        setPreferences((p) => ({ ...p, familyName: hh.name, members: hh.members, vegetarian: hh.vegetarian, dislikes: hh.dislikes ?? p.dislikes }))
         setVoting((v) => ({ ...v, enabled: hh.voting_enabled }))
       } catch (e) { console.error('Bootstrap failed:', e) }
     })()
@@ -760,15 +844,15 @@ function App() {
 
   useEffect(() => {
     if (!household) return
-    if (preferences.familyName === household.name && preferences.members === household.members && preferences.vegetarian === household.vegetarian && voting.enabled === household.voting_enabled) return
+    if (preferences.familyName === household.name && preferences.members === household.members && preferences.vegetarian === household.vegetarian && voting.enabled === household.voting_enabled && JSON.stringify(preferences.dislikes) === JSON.stringify(household.dislikes ?? [])) return
     const t = setTimeout(async () => {
       try {
-        const updated = await api.updateHousehold(household.id, { name: preferences.familyName, members: preferences.members, vegetarian: preferences.vegetarian, voting_enabled: voting.enabled })
+        const updated = await api.updateHousehold(household.id, { name: preferences.familyName, members: preferences.members, vegetarian: preferences.vegetarian, voting_enabled: voting.enabled, dislikes: preferences.dislikes })
         setHousehold(updated)
       } catch (e) { console.error('Household sync failed:', e) }
     }, 800)
     return () => clearTimeout(t)
-  }, [preferences.familyName, preferences.members, preferences.vegetarian, voting.enabled, household])
+  }, [preferences.familyName, preferences.members, preferences.vegetarian, voting.enabled, preferences.dislikes, household])
 
   const mealOptions = useMemo(() => recommendMeals(preferences, inventory), [preferences, inventory])
   const orders = useMemo(() => getOrderSuggestions(inventory), [inventory])
@@ -853,8 +937,17 @@ function App() {
     }
     if (intent.kind === 'feed') {
       if (intent.dislike) {
-        setPreferences((p) => ({ ...p, dislikes: Array.from(new Set([...p.dislikes, intent.dislike!])) }))
-        return `Theek hai, ${intent.dislike} kabhi suggest nahi karunga.`
+        // Dedupe by name (case-insensitive): if the same dish is already
+        // disliked (with or without a slot), update the slot rather than
+        // adding a duplicate. The newer entry wins.
+        const target = intent.dislike.trim().toLowerCase()
+        const newSlot = intent.dislikeSlot ?? null
+        setPreferences((p) => {
+          const withoutDup = p.dislikes.filter((d) => d.name.trim().toLowerCase() !== target)
+          return { ...p, dislikes: [...withoutDup, { name: intent.dislike!, slot: newSlot }] }
+        })
+        const slotSuffix = intent.dislikeSlot ? ` for ${intent.dislikeSlot.toLowerCase()}` : ''
+        return `Theek hai, ${intent.dislike}${slotSuffix} kabhi suggest nahi karunga.`
       }
       if (intent.like) {
         return `Accha, ${intent.like} pasand hai. Note kar liya.`
@@ -1122,6 +1215,16 @@ function App() {
           })}
         </section>
 
+        {preferences.dislikes.length > 0 && <DislikesSection
+          dislikes={preferences.dislikes}
+          onRemove={(i) => setPreferences((p) => ({ ...p, dislikes: p.dislikes.filter((_, j) => j !== i) }))}
+          onAdd={(name, slot) => setPreferences((p) => {
+            const target = name.trim().toLowerCase()
+            const withoutDup = p.dislikes.filter((d) => d.name.trim().toLowerCase() !== target)
+            return { ...p, dislikes: [...withoutDup, { name: name.trim(), slot: slot ?? null }] }
+          })}
+        />}
+
         {mealHistory.length > 0 && <section className="history-section">
           <div className="page-heading"><span className="eyebrow"><Clock3 size={14} /> THIS WEEK</span><h2>Recently cooked</h2><p>Last {mealHistory.length} meal{mealHistory.length === 1 ? '' : 's'} you've confirmed. Use this to avoid repeats.</p></div>
           <ul className="history-list">
@@ -1266,7 +1369,7 @@ function App() {
           <div className="setting-row"><span><b>Dishes per meal</b><small>Main, side, bread or rice</small></span><Counter value={preferences.dishesPerMeal} setValue={(dishesPerMeal) => setPreferences({ ...preferences, dishesPerMeal })} /></div>
           <label className="setting-row toggle-row"><span><b>Pure vegetarian household</b><small>Never suggest eggs or meat</small></span><input type="checkbox" checked={preferences.vegetarian} onChange={(e) => setPreferences({ ...preferences, vegetarian: e.target.checked })} /></label>
           <label className="setting-row toggle-row"><span><b>Family voting</b><small>Let everyone pick a meal — transparent tally</small></span><input type="checkbox" checked={voting.enabled} onChange={(e) => setVoting((v) => ({ ...v, enabled: e.target.checked }))} /></label>
-          {preferences.dislikes.length > 0 && <div className="setting-row"><span><b>Never suggest</b><small>Set by you or the assistant</small></span><div className="dislike-tags">{preferences.dislikes.map((d) => <span className="tag" key={d}>{d}<button onClick={() => setPreferences((p) => ({ ...p, dislikes: p.dislikes.filter((x) => x !== d) }))} aria-label={`Remove ${d}`}><X size={12} /></button></span>)}</div></div>}
+          {preferences.dislikes.length > 0 && <div className="setting-row"><span><b>Never suggest</b><small>Set by you or the assistant</small></span><div className="dislike-tags">{preferences.dislikes.map((d, i) => <span className="tag" key={`${d.name}-${i}`}>{d.name}{d.slot && <em className="dislike-slot-pill"> · {d.slot.toLowerCase()}</em>}<button onClick={() => setPreferences((p) => ({ ...p, dislikes: p.dislikes.filter((_, j) => j !== i) }))} aria-label={`Remove ${d.name}`}><X size={12} /></button></span>)}</div></div>}
           <button className="reset-button" onClick={resetData}><RotateCcw size={17} /> Reset to demo data</button>
           <button className="reset-button" style={{ marginLeft: 8 }} onClick={() => {
             // Force the onboarding wizard to re-show. The wizard itself

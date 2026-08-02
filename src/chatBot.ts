@@ -3,7 +3,7 @@ export type ChatIntent =
   | { kind: 'preference'; action: 'set-suggestions'; value: number }
   | { kind: 'preference'; action: 'set-dishes'; value: number }
   | { kind: 'preference'; action: 'set-members'; value: number }
-  | { kind: 'feed'; dislike: string | null; like: string | null }
+  | { kind: 'feed'; dislike: string | null; like: string | null; dislikeSlot?: 'BREAKFAST' | 'LUNCH' | 'DINNER' | null }
   // F3 — chat-driven inventory updates. The chat returns a parsed intent
   // and the App applies it. We don't return a target ingredient id (the
   // matcher uses substring lookup on the dish keyword table).
@@ -92,9 +92,22 @@ export function parseCommand(input: string): ChatIntent {
     }
   }
 
+  // Detect a per-meal-time slot from the user input. Only fires when
+  // a dislike keyword is present so we don't accidentally slot-tag a
+  // generic statement.
+  const detectDislikeSlot = (lower: string): 'BREAKFAST' | 'LUNCH' | 'DINNER' | null => {
+    if (/\bbreakfast\b|सुबह|नाश्ता|காலை|ఉదయం|ಬೆಳಗ್ಗೆ|সকাল/.test(lower)) return 'BREAKFAST'
+    if (/\blunch\b|दोपहर|மதியம்|మధ్యాహ్నం|ಮಧ್ಯಾಹ್ನ|দুপুর/.test(lower)) return 'LUNCH'
+    if (/\bdinner\b|रात|रात का|இரவு|రాత్రి|ರಾತ್ರಿ|সন্ধ্যা|সાંজে/.test(lower)) return 'DINNER'
+    return null
+  }
+
   const dislike = DISLIKE_HINTS.some((h) => lower.includes(h)) ? matchDish(lower) : null
   const like = !dislike && LIKE_HINTS.some((h) => lower.includes(h)) ? matchDish(lower) : null
-  if (dislike || like) return { kind: 'feed', dislike, like }
+  if (dislike || like) {
+    const dislikeSlot = dislike ? detectDislikeSlot(lower) : null
+    return { kind: 'feed', dislike, like, dislikeSlot }
+  }
 
   // F3 — inventory updates via chat. Match "add 2 kg rice" / "I used 3 eggs".
   const inventoryAction = (() => {

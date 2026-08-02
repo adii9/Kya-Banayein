@@ -406,6 +406,26 @@ header .brand small { color: var(--muted); }
 .onboarding-item.custom { border-color: rgba(220,165,49,.4); }
 
 /* ============================================================================
+ * Dislikes section (Phase 3, Today tab)
+ * ============================================================================ */
+.dislikes-section { margin-top: 32px; padding: 20px; background: var(--card); border: 1px solid #e5ddd1; border-radius: 18px; }
+.dislikes-section .page-heading { margin-bottom: 14px; }
+.dislikes-section .page-heading h2 { font-size: 22px; margin: 4px 0; }
+.dislikes-section .page-heading p { color: var(--muted); font-size: 13px; margin: 0; }
+.dislike-chips { list-style: none; padding: 0; margin: 0 0 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+.dislike-chip { display: inline-flex; align-items: center; gap: 6px; background: rgba(180,80,60,.08); border: 1px solid rgba(180,80,60,.25); border-radius: 999px; padding: 3px 8px 3px 12px; font-size: 13px; color: var(--ink); }
+.dislike-chip .dislike-slot-pill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--red); background: rgba(180,80,60,.12); padding: 1px 6px; border-radius: 999px; font-style: normal; }
+.dislike-chip button { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 0; display: inline-flex; align-items: center; }
+.dislike-chip button:hover { color: var(--red); }
+.dislike-add-btn { background: transparent; border: 1px dashed rgba(180,80,60,.35); color: var(--muted); border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.dislike-add-btn:hover { color: var(--red); border-color: var(--red); }
+.dislike-add-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.dislike-add-row input { flex: 1 1 140px; min-width: 120px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; background: #fff; }
+.dislike-add-row select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; background: #fff; }
+.dislike-add-row button { padding: 4px 12px; font-size: 12px; }
+.dislike-tags .dislike-slot-pill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--red); background: rgba(180,80,60,.12); padding: 1px 6px; border-radius: 999px; font-style: normal; margin-left: 4px; }
+
+/* ============================================================================
  * Family page (Phase B)
  * ============================================================================ */
 .family-page .family-add-row { display: flex; gap: 8px; margin-bottom: 24px; }

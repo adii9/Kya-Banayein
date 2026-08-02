@@ -18,6 +18,15 @@ export const generateJoinCode = (): string => {
   return `JOIN-${out}`
 }
 
+// One thing the household doesn't eat. slot is optional — when absent the
+// dislike applies at any time. dayOfWeek is also optional (0=Sunday..6=Sat)
+// for the future "no non-veg on Tuesdays" use case.
+export type Dislike = {
+  name: string
+  slot?: 'BREAKFAST' | 'LUNCH' | 'DINNER' | null
+  dayOfWeek?: number | null
+}
+
 export type Household = {
   id: string
   owner_id: string
@@ -28,6 +37,7 @@ export type Household = {
   voting_enabled: boolean
   onboarding_complete: boolean
   join_code: string | null
+  dislikes: Dislike[]  // JSONB column, always present (default '[]')
 }
 
 export type Voter = { id: string; name: string; invite_code: string }
