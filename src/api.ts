@@ -203,8 +203,8 @@ export const confirmMealPlan = async (householdId: string, isoDate: string, slot
 // Custom inventory items are user-added entries that don't match the seed
 // ingredient IDs. They're deletable, editable like any other inventory row,
 // and carry custom=true so the UI can render a delete button on them.
-export const addCustomInventoryItem = async (householdId: string, item: { name: string; quantity: number; unit: string; category: 'weekly' | 'monthly'; reorderAt?: number; targetStock?: number }): Promise<{ id: string }> => {
-  const row = { household_id: householdId, name: item.name, quantity: item.quantity, unit: item.unit, category: item.category, reorder_at: item.reorderAt ?? Math.max(1, Math.floor(item.quantity * 0.5)), target_stock: item.targetStock ?? item.quantity, custom: true }
+export const addCustomInventoryItem = async (householdId: string, item: { name: string; quantity: number; unit: string; category: 'weekly' | 'monthly'; reorderAt?: number; targetStock?: number; group?: string }): Promise<{ id: string }> => {
+  const row = { household_id: householdId, name: item.name, quantity: item.quantity, unit: item.unit, category: item.category, reorder_at: item.reorderAt ?? Math.max(1, Math.floor(item.quantity * 0.5)), target_stock: item.targetStock ?? item.quantity, custom: true, group: item.group ?? null }
   const { data, error } = await table('inventory_items').insert(row).select('id').single()
   if (error) throw error
   return data as { id: string }
@@ -213,6 +213,35 @@ export const addCustomInventoryItem = async (householdId: string, item: { name: 
 export const deleteInventoryItem = async (id: string) => {
   const { error } = await table('inventory_items').delete().eq('id', id)
   if (error) throw error
+}
+
+// Bulk-replace a household's inventory with the given items. Used by the
+// onboarding wizard — the user picks the items they want, and we wipe any
+// existing rows and insert the chosen set in one go. The kitchen
+// template's inventory ids are stable strings ("atta", "rice", "toor-dal"
+// etc.) so re-running onboarding is idempotent at the row level.
+//
+// If items is empty, deletes everything (so the user can onboard with an
+// empty kitchen and add things manually from the Kitchen tab).
+export const bulkReplaceInventory = async (householdId: string, items: { id: string; name: string; quantity: number; unit: string; category: 'weekly' | 'monthly'; group?: string }[]): Promise<void> => {
+  // Step 1: clear existing rows for this household.
+  const { error: delErr } = await table('inventory_items').delete().eq('household_id', householdId)
+  if (delErr) throw delErr
+  if (items.length === 0) return
+  // Step 2: insert the new set.
+  const rows = items.map((it) => ({
+    household_id: householdId,
+    name: it.name,
+    quantity: it.quantity,
+    unit: it.unit,
+    category: it.category,
+    reorder_at: Math.max(1, Math.floor(it.quantity * 0.4)),
+    target_stock: it.quantity,
+    custom: false,  // template items are not user-custom, just seeded from the template
+    group: it.group ?? null,
+  }))
+  const { error: insErr } = await table('inventory_items').insert(rows)
+  if (insErr) throw insErr
 }
 
 export type OrderOverride = {
