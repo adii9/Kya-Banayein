@@ -404,3 +404,38 @@ header .brand small { color: var(--muted); }
 .onboarding-custom-add:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .onboarding-item.custom { border-color: rgba(220,165,49,.4); }
+
+/* ============================================================================
+ * Family page (Phase B)
+ * ============================================================================ */
+.family-page .family-add-row { display: flex; gap: 8px; margin-bottom: 24px; }
+.family-page .family-add-row input { flex: 1; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; background: #fff; }
+.family-grid { background: var(--card); border: 1px solid #e5ddd1; border-radius: 18px; padding: 6px 0; }
+.family-grid-header, .family-row { display: grid; grid-template-columns: 160px 1fr 1fr 1fr 40px; gap: 8px; align-items: start; padding: 12px 16px; }
+.family-grid-header { border-bottom: 1px solid var(--line); padding-top: 8px; padding-bottom: 8px; }
+.family-grid-header .family-slot-col { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; text-align: center; padding-top: 4px; }
+.family-name-col b { display: block; font-size: 14px; }
+.family-name-col small { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.family-slot-col { min-height: 40px; }
+.family-empty-slot { color: var(--muted); font-size: 18px; display: block; text-align: center; padding: 8px 0; }
+.family-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.family-chip { display: inline-flex; align-items: center; gap: 4px; background: rgba(220,165,49,.12); border: 1px solid rgba(220,165,49,.25); border-radius: 999px; padding: 2px 8px 2px 10px; font-size: 12px; color: var(--ink); }
+.family-chip button { background: transparent; border: none; padding: 0; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; }
+.family-chip button:hover { color: var(--red); }
+.family-add-dish-btn { background: transparent; border: 1px dashed rgba(220,165,49,.35); color: var(--muted); border-radius: 6px; padding: 4px 8px; font-size: 11px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.family-add-dish-btn:hover { color: var(--orange); border-color: var(--orange); }
+.family-add-dish { display: flex; gap: 4px; margin-top: 4px; align-items: center; flex-wrap: wrap; }
+.family-add-dish input { flex: 1 1 80px; min-width: 80px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; background: #fff; }
+.family-add-dish button { padding: 3px 8px; font-size: 11px; }
+.family-actions-col { display: flex; align-items: center; justify-content: center; }
+.family-remove { background: transparent; border: none; color: var(--red); cursor: pointer; padding: 4px; opacity: 0.5; }
+.family-remove:hover { opacity: 1; }
+.family-row + .family-row { border-top: 1px solid rgba(229,221,209,.5); }
+.family-note { margin-top: 16px; padding: 12px 14px; background: rgba(220,165,49,.05); border: 1px solid rgba(220,165,49,.2); border-radius: 10px; display: flex; gap: 8px; align-items: flex-start; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.family-note svg { flex-shrink: 0; color: var(--orange); margin-top: 1px; }
+@media (max-width: 720px) {
+  .family-grid-header, .family-row { grid-template-columns: 1fr; gap: 4px; }
+  .family-grid-header { display: none; }
+  .family-slot-col { padding: 4px 0; border-top: 1px dashed rgba(220,165,49,.2); }
+  .family-slot-col::before { content: attr(data-slot); display: block; font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+}
