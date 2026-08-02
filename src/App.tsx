@@ -7,6 +7,7 @@ import { parseCommand, SUPPORTED_LANGS, type ChatIntent } from './chatBot'
 import { addVoter as _addVoter, buildWhatsAppShareUrl, castVote as _castVote, createPoll, getResults, type Poll, type PollResult } from './voting'
 import { supabase, SUPABASE_URL } from './supabase'
 import * as api from './api'
+import { KITCHEN_GROUPS, type KitchenTemplateItem } from './kitchenTemplate'
 
 type Tab = 'today' | 'inventory' | 'orders' | 'household' | 'onboarding' | 'join'
 
@@ -308,52 +309,312 @@ function JoinScreen({ code, household, onJoin, onCancel, busy }: {
   </div>
 }
 
-function Onboarding({ session, onComplete }: { session: Session; onComplete: (household: api.Household) => void }) {
+// =============================================================================
+// KitchenOnboarding — multi-step wizard that replaces the original 3-question
+// form. Steps:
+//   1. Welcome: household name + vegetarian toggle (with skip option)
+//   2..N. One step per KITCHEN_GROUPS entry, showing toggleable items
+//   N+1. Summary: "you've picked N items, finish" + bulk-save
+//
+// The user can navigate back/forward between steps, skip the whole thing,
+// or skip individual groups. Selected items are tracked in local state
+// during the wizard and bulk-saved at the end via api.bulkReplaceInventory.
+// =============================================================================
+function KitchenOnboarding({ session, onComplete }: { session: Session; onComplete: (household: api.Household) => void }) {
+  // Wizard state.
+  const [stepIdx, setStepIdx] = useState(0)
+  const steps = useMemo(() => ['welcome', ...KITCHEN_GROUPS.map((g) => g.id), 'summary'] as const, [])
+
+  // The selected items live in a map keyed by item id. Each entry holds
+  // the display name (so custom items without a template entry still
+  // round-trip through bulk-replace), the quantity and the unit. Template
+  // items use the template's name; custom items get a 'custom-' prefixed
+  // id and a user-supplied name.
+  const [picks, setPicks] = useState<Record<string, { name: string; qty: number; unit: 'g' | 'kg' | 'ml' | 'l' | 'pcs' }>>({})
+  // Custom-item form state, per group. Keyed by groupId so the form
+  // remembers its half-filled state when the user navigates back.
+  const [customDraft, setCustomDraft] = useState<Record<string, { name: string; qty: string; unit: 'g' | 'kg' | 'ml' | 'l' | 'pcs' }>>({})
+
+  // Welcome-step state.
   const [name, setName] = useState('My Kitchen')
-  const [members, setMembers] = useState(4)
   const [vegetarian, setVegetarian] = useState(false)
   const [voting, setVoting] = useState(false)
-  const [busy, setBusy] = useState(false)
 
-  const submit = async (skip = false) => {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const currentStep = steps[stepIdx]
+  const currentGroup = currentStep === 'welcome' || currentStep === 'summary'
+    ? null
+    : KITCHEN_GROUPS.find((g) => g.id === currentStep) ?? null
+
+  const totalPicks = Object.keys(picks).length
+
+  const toggleItem = (item: KitchenTemplateItem) => {
+    setPicks((prev) => {
+      const next = { ...prev }
+      if (next[item.id]) {
+        delete next[item.id]
+      } else {
+        next[item.id] = { name: item.name, qty: item.defaultQty, unit: item.defaultUnit }
+      }
+      return next
+    })
+  }
+
+  const updatePick = (itemId: string, patch: Partial<{ qty: number; unit: 'g' | 'kg' | 'ml' | 'l' | 'pcs' }>) => {
+    setPicks((prev) => {
+      if (!prev[itemId]) return prev
+      return { ...prev, [itemId]: { ...prev[itemId], ...patch } }
+    })
+  }
+
+  // Add a custom item (typed by the user) to the picks map and clear the
+  // group's draft form. The id is a real UUID so it round-trips through
+  // the inventory_items.id column (which is uuid-typed). The name is
+  // whatever the user typed. We don't validate the name — the
+  // inventory_items.name column is text.
+  const addCustomItem = (group: typeof KITCHEN_GROUPS[number]) => {
+    const draft = customDraft[group.id]
+    if (!draft || !draft.name.trim()) return
+    const qty = parseFloat(draft.qty) || 0
+    if (qty <= 0) return
+    const id = typeof crypto !== 'undefined' && crypto.randomUUID
+      ? `custom-${crypto.randomUUID()}`
+      : `custom-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`
+    setPicks((prev) => ({ ...prev, [id]: { name: draft.name.trim(), qty, unit: draft.unit } }))
+    setCustomDraft((prev) => ({ ...prev, [group.id]: { name: '', qty: '500', unit: 'g' } }))
+  }
+
+  // Bulk-toggle a whole group: if all items in it are picked, uncheck all;
+  // otherwise check all. Saves the user from a long tap-through.
+  const toggleGroup = (group: typeof KITCHEN_GROUPS[number]) => {
+    const allPicked = group.items.every((it) => picks[it.id])
+    setPicks((prev) => {
+      const next = { ...prev }
+      if (allPicked) {
+        group.items.forEach((it) => delete next[it.id])
+      } else {
+        group.items.forEach((it) => {
+          if (!next[it.id]) next[it.id] = { name: it.name, qty: it.defaultQty, unit: it.defaultUnit }
+        })
+      }
+      return next
+    })
+  }
+
+  const finish = async (skipPantry = false) => {
     setBusy(true)
+    setError(null)
     try {
-      const hh = await api.createHousehold(session.user.id, { name: skip ? 'My Kitchen' : name, members: skip ? 4 : members, vegetarian: skip ? false : vegetarian, voting_enabled: skip ? false : voting, onboarding_complete: true })
-      await api.seedInventory(hh.id)
+      // Step 1: create the household with the welcome-step fields.
+      const hh = await api.createHousehold(session.user.id, {
+        name: name.trim() || 'My Kitchen',
+        members: 4,
+        vegetarian,
+        voting_enabled: voting,
+        onboarding_complete: true,
+      })
+      // Step 2: bulk-replace the inventory with the picked items (or
+      // empty if the user skipped the pantry).
+      const items = skipPantry
+        ? []
+        : Object.entries(picks).map(([id, p]) => {
+            const group = KITCHEN_GROUPS.find((g) => g.items.some((it) => it.id === id))
+            const tpl = group?.items.find((it) => it.id === id)
+            return {
+              id,
+              name: p.name || tpl?.name || id,  // p.name is the source of truth; tpl is fallback
+              quantity: p.qty,
+              unit: p.unit,
+              category: tpl?.category ?? 'monthly',  // custom items default to monthly reorder
+              group: group?.id,
+            } as { id: string; name: string; quantity: number; unit: 'g' | 'kg' | 'ml' | 'l' | 'pcs'; category: 'weekly' | 'monthly'; group?: string }
+          })
+      await api.bulkReplaceInventory(hh.id, items)
       onComplete(hh)
-    } catch (e) {
+    } catch (e: any) {
       console.error(e)
-      alert('Could not create household. Try again.')
+      setError(e?.message || 'Could not save. Try again.')
     } finally { setBusy(false) }
   }
 
-  return <div className="onboarding">
-    <div className="onboarding-card">
-      <span className="eyebrow"><Sparkles size={14} /> WELCOME</span>
-      <h1>Set up your kitchen</h1>
-      <p>3 quick questions. Skip any of them — you can change everything later in Rules.</p>
-      <label className="onboarding-field">
-        <span>Household name</span>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Mathur Parivaar" />
-      </label>
-      <div className="onboarding-row">
-        <span><b>Family size</b><small>Used for grocery quantities</small></span>
-        <Counter value={members} setValue={setMembers} max={12} />
-      </div>
-      <label className="onboarding-row toggle">
-        <span><b>Pure vegetarian household</b><small>No eggs or meat in suggestions</small></span>
-        <input type="checkbox" checked={vegetarian} onChange={(e) => setVegetarian(e.target.checked)} />
-      </label>
-      <label className="onboarding-row toggle">
-        <span><b>Enable family voting</b><small>Transparent tally on Today</small></span>
-        <input type="checkbox" checked={voting} onChange={(e) => setVoting(e.target.checked)} />
-      </label>
-      <div className="onboarding-actions">
-        <button className="primary" disabled={busy} onClick={() => submit(false)}>Create my kitchen <ChevronRight size={17} /></button>
-        <button className="reset-button" disabled={busy} onClick={() => submit(true)}>Skip — use defaults</button>
+  // ===========================================================================
+  // Step renders
+  // ===========================================================================
+  if (currentStep === 'welcome') {
+    return <div className="onboarding">
+      <div className="onboarding-card onboarding-welcome">
+        <span className="eyebrow"><Sparkles size={14} /> NAMASTE</span>
+        <h1>Aapka swagat hai 🙏</h1>
+        <p>Let's set up your kitchen in 5 quick steps. You'll pick what you actually have at home — atta, daal, masala, sabziyan, the works. No need to remember everything; you can edit it any time.</p>
+        <label className="onboarding-field">
+          <span>What should we call your kitchen?</span>
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Mathur Parivaar" autoFocus />
+        </label>
+        <label className="onboarding-row toggle">
+          <span><b>Pure vegetarian household</b><small>No eggs or meat in suggestions</small></span>
+          <input type="checkbox" checked={vegetarian} onChange={(e) => setVegetarian(e.target.checked)} />
+        </label>
+        <label className="onboarding-row toggle">
+          <span><b>Enable family voting</b><small>Transparent tally on Today</small></span>
+          <input type="checkbox" checked={voting} onChange={(e) => setVoting(e.target.checked)} />
+        </label>
+        {error && <p className="onboarding-error">{error}</p>}
+        <div className="onboarding-actions">
+          <button className="primary" disabled={busy} onClick={() => setStepIdx(stepIdx + 1)}>Chalo shuru karte hain <ChevronRight size={17} /></button>
+          <button className="reset-button" disabled={busy} onClick={() => finish(true)}>Skip — use a starter kitchen</button>
+        </div>
       </div>
     </div>
-  </div>
+  }
+
+  if (currentGroup) {
+    const groupPicked = currentGroup.items.filter((it) => picks[it.id]).length
+    const allPicked = groupPicked === currentGroup.items.length
+    return <div className="onboarding">
+      <div className="onboarding-card onboarding-group">
+        <div className="onboarding-progress">
+          <span>Step {stepIdx} of {steps.length - 1}</span>
+          <div className="onboarding-progress-bar"><i style={{ width: `${(stepIdx / (steps.length - 1)) * 100}%` }} /></div>
+        </div>
+        <div className="onboarding-group-head">
+          <span className="onboarding-emoji">{currentGroup.emoji}</span>
+          <div>
+            <h1>{currentGroup.label}</h1>
+            {currentGroup.labelHi && <p className="onboarding-hindi">{currentGroup.labelHi}</p>}
+          </div>
+          <button className="reset-button onboarding-group-toggle-all" onClick={() => toggleGroup(currentGroup)}>{allPicked ? 'Uncheck all' : `Add all (${currentGroup.items.length})`}</button>
+        </div>
+        <p className="onboarding-group-help">Tap to add. After tapping, edit the quantity if you want a different amount. Items not in the list? Add your own below.</p>
+        <div className="onboarding-grid">
+          {currentGroup.items.map((it) => {
+            const picked = !!picks[it.id]
+            return <div key={it.id} className={`onboarding-item ${picked ? 'picked' : ''}`}>
+              <label className="onboarding-item-row">
+                <input type="checkbox" checked={picked} onChange={() => toggleItem(it)} />
+                <span className="onboarding-item-name">{it.name}</span>
+                <span className="onboarding-item-default">{it.defaultQty.toLocaleString()} {it.defaultUnit}</span>
+              </label>
+              {picked && (
+                <div className="onboarding-item-edit">
+                  <input type="number" min="0" value={picks[it.id].qty} onChange={(e) => updatePick(it.id, { qty: parseFloat(e.target.value) || 0 })} />
+                  <select value={picks[it.id].unit} onChange={(e) => updatePick(it.id, { unit: e.target.value as any })}>
+                    <option value="g">g</option>
+                    <option value="kg">kg</option>
+                    <option value="ml">ml</option>
+                    <option value="l">l</option>
+                    <option value="pcs">pcs</option>
+                  </select>
+                </div>
+              )}
+            </div>
+          })}
+          {/* Render any custom items the user has added in this group. Custom
+              items are stored in the picks map with ids starting 'custom-'.
+              They behave like template items: toggle off to remove, edit
+              qty/unit inline. */}
+          {Object.entries(picks)
+            .filter(([id]) => id.startsWith('custom-'))
+            .map(([id, p]) => {
+              const picked = true  // custom items are always 'picked' by definition
+              return <div key={id} className={`onboarding-item custom picked`}>
+                <label className="onboarding-item-row">
+                  <input type="checkbox" checked={picked} onChange={() => setPicks((prev) => { const next = { ...prev }; delete next[id]; return next })} />
+                  <span className="onboarding-item-name">{p.name}</span>
+                  <span className="onboarding-item-default" style={{ background: 'rgba(220,165,49,.15)', color: 'var(--orange)', padding: '2px 8px', borderRadius: 999, fontSize: 10, fontWeight: 700, textTransform: 'uppercase' }}>Custom</span>
+                </label>
+                <div className="onboarding-item-edit">
+                  <input type="number" min="0" value={p.qty} onChange={(e) => updatePick(id, { qty: parseFloat(e.target.value) || 0 })} />
+                  <select value={p.unit} onChange={(e) => updatePick(id, { unit: e.target.value as any })}>
+                    <option value="g">g</option>
+                    <option value="kg">kg</option>
+                    <option value="ml">ml</option>
+                    <option value="l">l</option>
+                    <option value="pcs">pcs</option>
+                  </select>
+                </div>
+              </div>
+            })}
+        </div>
+
+        {/* Add custom item form. The form is always visible at the bottom
+            of each group step so the user can add anything missing from
+            the template (e.g. "kokum", "kasuri methi", "tamarind paste"). */}
+        <div className="onboarding-custom-row">
+          {(() => {
+            const draft = customDraft[currentGroup.id] ?? { name: '', qty: '500', unit: 'g' }
+            const update = (patch: Partial<typeof draft>) => setCustomDraft((prev) => ({ ...prev, [currentGroup.id]: { ...draft, ...patch } }))
+            return <>
+              <span className="onboarding-custom-label">+ Add your own</span>
+              <input
+                placeholder={`e.g. Kasuri methi for ${currentGroup.label.toLowerCase()}`}
+                value={draft.name}
+                onChange={(e) => update({ name: e.target.value })}
+                onKeyDown={(e) => e.key === 'Enter' && addCustomItem(currentGroup)}
+                className="onboarding-custom-name"
+              />
+              <input type="number" min="0" placeholder="qty" value={draft.qty} onChange={(e) => update({ qty: e.target.value })} className="onboarding-custom-qty" />
+              <select value={draft.unit} onChange={(e) => update({ unit: e.target.value as any })} className="onboarding-custom-unit">
+                <option value="g">g</option>
+                <option value="kg">kg</option>
+                <option value="ml">ml</option>
+                <option value="l">l</option>
+                <option value="pcs">pcs</option>
+              </select>
+              <button className="primary onboarding-custom-add" onClick={() => addCustomItem(currentGroup)} disabled={!draft.name.trim() || !parseFloat(draft.qty)}>Add</button>
+            </>
+          })()}
+        </div>
+        {error && <p className="onboarding-error">{error}</p>}
+        <div className="onboarding-actions">
+          {stepIdx > 0 && <button className="reset-button" disabled={busy} onClick={() => setStepIdx(stepIdx - 1)}>← Back</button>}
+          {stepIdx < steps.length - 1
+            ? <button className="primary" disabled={busy} onClick={() => setStepIdx(stepIdx + 1)}>{groupPicked > 0 ? `Continue with ${groupPicked} added` : 'Continue'} <ChevronRight size={17} /></button>
+            : <button className="primary" disabled={busy} onClick={() => finish(false)}>Save and finish <ChevronRight size={17} /></button>
+          }
+          {groupPicked === 0 && stepIdx < steps.length - 1 && <button className="reset-button" disabled={busy} onClick={() => setStepIdx(stepIdx + 1)}>Skip this group</button>}
+        </div>
+      </div>
+    </div>
+  }
+
+  if (currentStep === 'summary') {
+    return <div className="onboarding">
+      <div className="onboarding-card onboarding-summary">
+        <div className="onboarding-progress">
+          <span>Step {steps.length - 1} of {steps.length - 1}</span>
+          <div className="onboarding-progress-bar"><i style={{ width: '100%' }} /></div>
+        </div>
+        <span className="eyebrow"><Check size={14} /> READY TO COOK</span>
+        <h1>{totalPicks > 0 ? `Aapne ${totalPicks} cheezein chuni hain` : 'Empty kitchen — let\'s add things later'}</h1>
+        {totalPicks > 0
+          ? <p>These will be in your kitchen. We'll suggest meals based on what's actually there. You can edit any of this from the Kitchen tab.</p>
+          : <p>You can add items from the Kitchen tab at any time.</p>
+        }
+        {totalPicks > 0 && (
+          <details className="onboarding-summary-details">
+            <summary>Review ({totalPicks} items)</summary>
+            <ul>
+              {Object.keys(picks).map((id) => {
+                const tpl = KITCHEN_GROUPS.flatMap((g) => g.items).find((it) => it.id === id)
+                if (!tpl) return null
+                const p = picks[id]
+                return <li key={id}><b>{tpl.name}</b><span>{p.qty.toLocaleString()} {p.unit}</span></li>
+              })}
+            </ul>
+          </details>
+        )}
+        {error && <p className="onboarding-error">{error}</p>}
+        <div className="onboarding-actions">
+          <button className="reset-button" disabled={busy} onClick={() => setStepIdx(stepIdx - 1)}>← Back to pantry</button>
+          <button className="primary" disabled={busy} onClick={() => finish(false)}>{busy ? 'Saving…' : 'Save and open my kitchen'} <ChevronRight size={17} /></button>
+        </div>
+      </div>
+    </div>
+  }
+
+  return null
 }
 
 function App() {
@@ -733,7 +994,7 @@ function App() {
       } finally { setJoinBusy(false) }
     }}
   />
-  if (!household) return <Onboarding session={session} onComplete={(hh) => { setHousehold(hh); setTab('today') }} />
+  if (!household) return <KitchenOnboarding session={session} onComplete={(hh) => { setHousehold(hh); setTab('today') }} />
 
   const voterList = Object.entries(voterIndex).map(([name, id]) => ({ name, id, code: id.slice(0, 5).toUpperCase() }))
 
@@ -962,7 +1223,17 @@ function App() {
           <label className="setting-row toggle-row"><span><b>Pure vegetarian household</b><small>Never suggest eggs or meat</small></span><input type="checkbox" checked={preferences.vegetarian} onChange={(e) => setPreferences({ ...preferences, vegetarian: e.target.checked })} /></label>
           <label className="setting-row toggle-row"><span><b>Family voting</b><small>Let everyone pick a meal — transparent tally</small></span><input type="checkbox" checked={voting.enabled} onChange={(e) => setVoting((v) => ({ ...v, enabled: e.target.checked }))} /></label>
           {preferences.dislikes.length > 0 && <div className="setting-row"><span><b>Never suggest</b><small>Set by you or the assistant</small></span><div className="dislike-tags">{preferences.dislikes.map((d) => <span className="tag" key={d}>{d}<button onClick={() => setPreferences((p) => ({ ...p, dislikes: p.dislikes.filter((x) => x !== d) }))} aria-label={`Remove ${d}`}><X size={12} /></button></span>)}</div></div>}
-          <button className="reset-button" onClick={resetData}><RotateCcw size={17} /> Reset demo data</button>
+          <button className="reset-button" onClick={resetData}><RotateCcw size={17} /> Reset to demo data</button>
+          <button className="reset-button" style={{ marginLeft: 8 }} onClick={() => {
+            // Force the onboarding wizard to re-show. The wizard itself
+            // detects the existing household and re-seeds inventory from
+            // scratch (it bulk-deletes first, so this is destructive — the
+            // user has to confirm). Useful for existing users who want
+            // to switch from the old hardcoded English seed to the new
+            // Indian kitchen template.
+            if (!window.confirm('Re-run pantry setup? Your current kitchen items will be replaced. Continue?')) return
+            setHousehold(null)
+          }}><Sparkles size={17} /> Re-run pantry setup</button>
         </div>
       </section>}
     </main>
