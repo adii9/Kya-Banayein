@@ -2,6 +2,22 @@ import type { InventoryItem, Dish } from './mealEngine'
 import { DEFAULT_INVENTORY } from './mealEngine'
 import { supabase } from './supabase'
 
+// Generates a 'JOIN-XXXXX' household join code. ~1M combinations (32^5);
+// on the rare chance of collision, the caller retries. We exclude
+// visually-ambiguous chars (0/O, 1/I/L) so codes are easy to read aloud.
+const JOIN_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+export const generateJoinCode = (): string => {
+  const arr = new Uint8Array(5)
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(arr)
+  } else {
+    for (let i = 0; i < 5; i += 1) arr[i] = Math.floor(Math.random() * 256)
+  }
+  let out = ''
+  for (let i = 0; i < 5; i += 1) out += JOIN_ALPHABET[arr[i] % JOIN_ALPHABET.length]
+  return `JOIN-${out}`
+}
+
 export type Household = {
   id: string
   owner_id: string
@@ -11,6 +27,7 @@ export type Household = {
   vegetarian: boolean
   voting_enabled: boolean
   onboarding_complete: boolean
+  join_code: string | null
 }
 
 export type Voter = { id: string; name: string; invite_code: string }
@@ -87,5 +104,208 @@ export const upsertVote = async (householdId: string, voterId: string, mealId: s
 
 export const recordMeal = async (householdId: string, mealId: string, dishes: Dish[]) => {
   const { error } = await table('meal_history').insert({ household_id: householdId, meal_id: mealId, dishes })
+  if (error) throw error
+}
+
+export const fetchMealHistory = async (householdId: string, limit = 7): Promise<MealHistoryRow[]> => {
+  const { data, error } = await table('meal_history')
+    .select('meal_id, dishes, confirmed_at')
+    .eq('household_id', householdId)
+    .order('confirmed_at', { ascending: false })
+    .limit(limit)
+  if (error) throw error
+  return (data ?? []) as MealHistoryRow[]
+}
+
+// Public lookup by join code. The RLS policy "join code lookup" on
+// households allows SELECT when join_code is not null, so this works for
+// any authenticated user (including joiners who aren't the owner). We
+// return the bare minimum the join screen needs: id and name. We never
+// expose owner_id, region, or other private fields.
+export const fetchHouseholdByJoinCode = async (code: string): Promise<{ id: string; name: string } | null> => {
+  const { data, error } = await table('households')
+    .select('id, name')
+    .eq('join_code', code)
+    .maybeSingle()
+  if (error) throw error
+  return data as { id: string; name: string } | null
+}
+
+// Persist a freshly generated join code on the household. Idempotent —
+// callers should generate once and only set if null. The RLS "join code
+// lookup" policy permits this for the owner (any authenticated user
+// with is_household_owner = true).
+export const setHouseholdJoinCode = async (householdId: string, code: string) => {
+  const { error } = await table('households').update({ join_code: code }).eq('id', householdId)
+  if (error) throw error
+}
+
+// Generates and persists a join code, retrying on the (rare) chance of
+// collision. Returns the updated household. Bails after 5 attempts.
+export const generateAndSetJoinCode = async (hh: Household): Promise<Household> => {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const code = generateJoinCode()
+    try {
+      await setHouseholdJoinCode(hh.id, code)
+      return { ...hh, join_code: code }
+    } catch (e: any) {
+      // Supabase unique-violation code is '23505'. Retry on collision;
+      // surface any other error immediately.
+      if (e?.code !== '23505' && !String(e?.message || '').includes('duplicate')) throw e
+    }
+  }
+  throw new Error('Could not generate a unique join code after 5 attempts')
+}
+
+// ============================================================================
+// Features v1 — meal plans, custom inventory, order overrides, voter prefs
+// ============================================================================
+
+export type MealSlot = 'BREAKFAST' | 'LUNCH' | 'DINNER'
+
+export type MealPlan = {
+  id: string
+  household_id: string
+  plan_date: string  // ISO date 'YYYY-MM-DD'
+  slot: MealSlot
+  meal_id: string | null
+  confirmed_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export const fetchMealPlansForDay = async (householdId: string, isoDate: string): Promise<MealPlan[]> => {
+  const { data, error } = await table('meal_plans')
+    .select('*')
+    .eq('household_id', householdId)
+    .eq('plan_date', isoDate)
+  if (error) throw error
+  return (data ?? []) as MealPlan[]
+}
+
+export const upsertMealPlan = async (householdId: string, isoDate: string, slot: MealSlot, mealId: string | null) => {
+  const { data, error } = await table('meal_plans')
+    .upsert({ household_id: householdId, plan_date: isoDate, slot, meal_id: mealId, updated_at: new Date().toISOString() }, { onConflict: 'household_id,plan_date,slot' })
+    .select('*')
+  if (error) throw error
+  return data?.[0] as MealPlan
+}
+
+export const confirmMealPlan = async (householdId: string, isoDate: string, slot: MealSlot) => {
+  const { error } = await table('meal_plans')
+    .update({ confirmed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq('household_id', householdId)
+    .eq('plan_date', isoDate)
+    .eq('slot', slot)
+  if (error) throw error
+}
+
+// Custom inventory items are user-added entries that don't match the seed
+// ingredient IDs. They're deletable, editable like any other inventory row,
+// and carry custom=true so the UI can render a delete button on them.
+export const addCustomInventoryItem = async (householdId: string, item: { name: string; quantity: number; unit: string; category: 'weekly' | 'monthly'; reorderAt?: number; targetStock?: number; group?: string }): Promise<{ id: string }> => {
+  const row = { household_id: householdId, name: item.name, quantity: item.quantity, unit: item.unit, category: item.category, reorder_at: item.reorderAt ?? Math.max(1, Math.floor(item.quantity * 0.5)), target_stock: item.targetStock ?? item.quantity, custom: true, group: item.group ?? null }
+  const { data, error } = await table('inventory_items').insert(row).select('id').single()
+  if (error) throw error
+  return data as { id: string }
+}
+
+export const deleteInventoryItem = async (id: string) => {
+  const { error } = await table('inventory_items').delete().eq('id', id)
+  if (error) throw error
+}
+
+// Bulk-replace a household's inventory with the given items. Used by the
+// onboarding wizard — the user picks the items they want, and we wipe any
+// existing rows and insert the chosen set in one go. The kitchen
+// template's inventory ids are stable strings ("atta", "rice", "toor-dal"
+// etc.) so re-running onboarding is idempotent at the row level.
+//
+// If items is empty, deletes everything (so the user can onboard with an
+// empty kitchen and add things manually from the Kitchen tab).
+export const bulkReplaceInventory = async (householdId: string, items: { id: string; name: string; quantity: number; unit: string; category: 'weekly' | 'monthly'; group?: string }[]): Promise<void> => {
+  // Step 1: clear existing rows for this household.
+  const { error: delErr } = await table('inventory_items').delete().eq('household_id', householdId)
+  if (delErr) throw delErr
+  if (items.length === 0) return
+  // Step 2: insert the new set.
+  const rows = items.map((it) => ({
+    household_id: householdId,
+    name: it.name,
+    quantity: it.quantity,
+    unit: it.unit,
+    category: it.category,
+    reorder_at: Math.max(1, Math.floor(it.quantity * 0.4)),
+    target_stock: it.quantity,
+    custom: false,  // template items are not user-custom, just seeded from the template
+    group: it.group ?? null,
+  }))
+  const { error: insErr } = await table('inventory_items').insert(rows)
+  if (insErr) throw insErr
+}
+
+export type OrderOverride = {
+  id: string
+  household_id: string
+  slot: 'weekly' | 'monthly'
+  inventory_id: string | null
+  custom_name: string | null
+  custom_quantity: number | null
+  custom_unit: string | null
+  custom_category: 'weekly' | 'monthly' | null
+  action: 'add' | 'remove'
+  created_at: string
+}
+
+export const fetchOrderOverrides = async (householdId: string): Promise<OrderOverride[]> => {
+  const { data, error } = await table('order_overrides').select('*').eq('household_id', householdId)
+  if (error) throw error
+  return (data ?? []) as OrderOverride[]
+}
+
+export const addOrderOverride = async (o: Omit<OrderOverride, 'id' | 'created_at'>) => {
+  const { error } = await table('order_overrides').insert(o)
+  if (error) throw error
+}
+
+export const deleteOrderOverride = async (id: string) => {
+  const { error } = await table('order_overrides').delete().eq('id', id)
+  if (error) throw error
+}
+
+export type VoterMealPreference = {
+  id: string
+  voter_id: string
+  slot: MealSlot | null
+  day_of_week: number | null
+  meal_name: string | null
+  mood: string | null
+  strength: number
+  created_at: string
+}
+
+export const fetchVoterPreferences = async (voterId: string): Promise<VoterMealPreference[]> => {
+  const { data, error } = await table('voter_meal_preferences').select('*').eq('voter_id', voterId)
+  if (error) throw error
+  return (data ?? []) as VoterMealPreference[]
+}
+
+export const fetchHouseholdPreferences = async (householdId: string): Promise<VoterMealPreference[]> => {
+  // Get all voters in the household, then union their preferences.
+  const voters = await fetchVoters(householdId)
+  const voterIds = voters.map((v) => v.id)
+  if (voterIds.length === 0) return []
+  const { data, error } = await table('voter_meal_preferences').select('*').in('voter_id', voterIds)
+  if (error) throw error
+  return (data ?? []) as VoterMealPreference[]
+}
+
+export const addVoterPreference = async (pref: Omit<VoterMealPreference, 'id' | 'created_at'>) => {
+  const { error } = await table('voter_meal_preferences').insert(pref)
+  if (error) throw error
+}
+
+export const deleteVoterPreference = async (id: string) => {
+  const { error } = await table('voter_meal_preferences').delete().eq('id', id)
   if (error) throw error
 }

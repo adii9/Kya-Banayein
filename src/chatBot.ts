@@ -4,6 +4,16 @@ export type ChatIntent =
   | { kind: 'preference'; action: 'set-dishes'; value: number }
   | { kind: 'preference'; action: 'set-members'; value: number }
   | { kind: 'feed'; dislike: string | null; like: string | null }
+  // F3 — chat-driven inventory updates. The chat returns a parsed intent
+  // and the App applies it. We don't return a target ingredient id (the
+  // matcher uses substring lookup on the dish keyword table).
+  | { kind: 'inventory'; action: 'add'; itemName: string; quantity: number; unit: string }
+  | { kind: 'inventory'; action: 'use'; itemName: string; quantity: number; unit: string }
+  // F2/F4 — plan a meal slot. Caller passes the date as ISO YYYY-MM-DD.
+  | { kind: 'plan'; slot: 'BREAKFAST' | 'LUNCH' | 'DINNER'; dishName: string; mood?: string }
+  // F5 — voter-keyed preference. We don't bind to a specific voter in the
+  // intent; the App applies it to the active voter (or first one).
+  | { kind: 'preference-record'; mealName: string; slot: 'BREAKFAST' | 'LUNCH' | 'DINNER' | null; dayOfWeek?: number }
   | { kind: 'unknown'; reply: string }
 const REPLY_HI = 'मैं सिर्फ खाने से जुड़ी बातें समझता हूँ—जैसे शाकाहारी, सुझाव, या पसंद।'
 const REPLY_TA = 'நான் சாப்பாட்டு விஷயங்கள் மட்டும் தான் புரிந்துகொள்கிறேன்.'
@@ -86,7 +96,70 @@ export function parseCommand(input: string): ChatIntent {
   const like = !dislike && LIKE_HINTS.some((h) => lower.includes(h)) ? matchDish(lower) : null
   if (dislike || like) return { kind: 'feed', dislike, like }
 
+  // F3 — inventory updates via chat. Match "add 2 kg rice" / "I used 3 eggs".
+  const inventoryAction = (() => {
+    if (/\b(added|got|bought|stocked)\b/.test(lower) || /\b(add|kharid|ख़रीद|கொள்|కొన్నాను|ತಂದೆ)\b/.test(lower)) return 'add' as const
+    if (/\b(used|consumed|finished|ran out)\b/.test(lower) || /\b(use|khatam|ख़तम|use చేసాను|ಬಳಸಿದೆ)\b/.test(lower)) return 'use' as const
+    return null
+  })()
+  if (inventoryAction) {
+    const n = findNumber(text)
+    if (n !== null) {
+      const item = matchDish(lower) ?? extractNoun(lower)
+      if (item) {
+        const unit = matchUnit(lower)
+        return { kind: 'inventory', action: inventoryAction, itemName: item, quantity: n, unit }
+      }
+    }
+  }
+
+  // F2/F4 — plan a slot. "make dinner spicy", "breakfast should be poha tomorrow",
+  // "tonight I want rajma" → returns a plan intent with the slot.
+  const slot = (() => {
+    if (/\b(breakfast|सुबह|నాస్తే|காலை|ಬೆಳಗ್ಗೆ|সকাল|ناشتا)\b/.test(lower)) return 'BREAKFAST' as const
+    if (/\b(lunch|दोपहर|భోజనం|மதியம்|ಮಧ್ಯಾಹ್ನ|দুপুর)\b/.test(lower)) return 'LUNCH' as const
+    if (/\b(dinner|रात|रात का|భోజనం|இரவு|ರಾತ್ರಿ|রাতে|సాయంత్రం)\b/.test(lower)) return 'DINNER' as const
+    return null
+  })()
+  if (slot) {
+    const mood = /\b(spicy|तिखटा|கார|చేదు|ಖಾರ|মশলাদার)\b/.test(lower) ? 'spicy'
+      : /\b(light|हल्का|லight|తేలికైన|ಲಘು)\b/.test(lower) ? 'light'
+      : /\b(comfort|आराम|comfort|comfort|comfort|comfort|comfort|comfort|comfort|comfort)\b/.test(lower) ? 'comfort'  // keep simple
+      : undefined
+    const dishName = matchDish(lower) ?? extractNoun(lower)
+    if (dishName) return { kind: 'plan', slot, dishName, mood }
+  }
+
   return { kind: 'unknown', reply: ({ hi: REPLY_HI, ta: REPLY_TA, te: REPLY_TE, kn: REPLY_KN, bn: REPLY_BN } as Record<string, string>)[lang] ?? REPLY_HI }
+}
+
+const UNIT_WORDS: Record<string, string> = {
+  'g': 'g', 'gram': 'g', 'grams': 'g', 'gm': 'g',
+  'kg': 'kg', 'kilo': 'kg', 'kilos': 'kg', 'kilogram': 'kg', 'kilograms': 'kg',
+  'ml': 'ml', 'l': 'l', 'liter': 'l', 'liters': 'l', 'litre': 'l', 'litres': 'l',
+  'pc': 'pcs', 'pcs': 'pcs', 'piece': 'pcs', 'pieces': 'pcs',
+  'एक': 'pcs', 'दो': 'pcs',  // ignore numbers-as-units
+  'ग्राम': 'g', 'किलो': 'kg', 'लीटर': 'l', 'पीस': 'pcs',
+  'கிராம்': 'g', 'கிலோ': 'kg', 'லிட்டர்': 'l',
+}
+
+const matchUnit = (lower: string): string => {
+  for (const [word, unit] of Object.entries(UNIT_WORDS)) {
+    if (lower.includes(word)) return unit
+  }
+  // default: count as pieces for small items, g otherwise
+  return 'g'
+}
+
+const extractNoun = (lower: string): string | null => {
+  // Strip verbs, articles, and common words. Return what's left as a guess
+  // for the item name. Crude but the chat is best-effort — the user can
+  // always correct via the kitchen tab.
+  const stop = new Set(['add', 'use', 'i', 'we', 'got', 'bought', 'stocked', 'used', 'consumed', 'finished', 'kharid', 'ख़रीद', 'khatam', 'ख़तम', 'please', 'a', 'an', 'the', 'to', 'for', 'with', 'on', 'some', 'more'])
+  const words = lower.split(/[^a-z0-9\u0900-\u097F\u0B80-\u0BFF\u0C00-\u0C7F\u0C80-\u0CFF\u0980-\u09FF]+/i).filter((w) => w.length > 1 && !stop.has(w) && !/^\d+$/.test(w))
+  if (words.length === 0) return null
+  // Prefer the longest word; that's usually the noun.
+  return words.sort((a, b) => b.length - a.length)[0]
 }
 
 const matchDish = (lower: string): string | null => {
