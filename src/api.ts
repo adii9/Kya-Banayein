@@ -300,9 +300,10 @@ export const fetchHouseholdPreferences = async (householdId: string): Promise<Vo
   return (data ?? []) as VoterMealPreference[]
 }
 
-export const addVoterPreference = async (pref: Omit<VoterMealPreference, 'id' | 'created_at'>) => {
-  const { error } = await table('voter_meal_preferences').insert(pref)
+export const addVoterPreference = async (pref: Omit<VoterMealPreference, 'id' | 'created_at'>): Promise<VoterMealPreference> => {
+  const { data, error } = await table('voter_meal_preferences').insert(pref).select('*').single()
   if (error) throw error
+  return data as VoterMealPreference
 }
 
 export const deleteVoterPreference = async (id: string) => {

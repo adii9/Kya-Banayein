@@ -9,7 +9,7 @@ import { supabase, SUPABASE_URL } from './supabase'
 import * as api from './api'
 import { KITCHEN_GROUPS, type KitchenTemplateItem } from './kitchenTemplate'
 
-type Tab = 'today' | 'inventory' | 'orders' | 'household' | 'onboarding' | 'join'
+type Tab = 'today' | 'inventory' | 'orders' | 'family' | 'household' | 'onboarding' | 'join'
 
 type Preferences = {
   familyName: string
@@ -658,7 +658,9 @@ function App() {
   const [newVoterName, setNewVoterName] = useState('')
   const [activeVoter, setActiveVoter] = useState<string | null>(null)
   const [voterIndex, setVoterIndex] = useState<Record<string, string>>({})
+  const [voters, setVoters] = useState<api.Voter[]>([])
   const [votesToday, setVotesToday] = useState<Record<string, string>>({})
+  const [voterPreferences, setVoterPreferences] = useState<api.VoterMealPreference[]>([])
   const [mealHistory, setMealHistory] = useState<api.MealHistoryRow[]>([])
   // Day plan: 3 slots per day, each with an optional meal plan.
   const [mealPlansByDate, setMealPlansByDate] = useState<Record<string, api.MealPlan[]>>({})
@@ -719,17 +721,20 @@ function App() {
         if (!hh.join_code) {
           api.generateAndSetJoinCode(hh).then((updated) => setHousehold(updated)).catch((e) => console.warn('Could not generate join code', e))
         }
-        const [inv, voters, votes, history, overrides, plans] = await Promise.all([
+        const [inv, voters, votes, history, overrides, plans, voterPrefs] = await Promise.all([
           api.fetchInventory(hh.id),
           api.fetchVoters(hh.id),
           api.fetchVotesToday(hh.id),
           api.fetchMealHistory(hh.id, 7),
           api.fetchOrderOverrides(hh.id),
           api.fetchMealPlansForDay(hh.id, new Date().toISOString().slice(0, 10)),
+          api.fetchHouseholdPreferences(hh.id),
         ])
         if (cancelled) return
         setInventory(inv)
         setMealHistory(history)
+        setVoterPreferences(voterPrefs)
+        setVoters(voters)
         setCustomOrderItems({
           weekly: overrides.filter((o) => o.slot === 'weekly' && o.action === 'add').map((o) => ({ id: o.id, name: o.custom_name ?? '', quantity: o.custom_quantity ?? 0, unit: o.custom_unit ?? 'g' })),
           monthly: overrides.filter((o) => o.slot === 'monthly' && o.action === 'add').map((o) => ({ id: o.id, name: o.custom_name ?? '', quantity: o.custom_quantity ?? 0, unit: o.custom_unit ?? 'g' })),
@@ -1213,6 +1218,45 @@ function App() {
         <div className="order-note"><Sparkles size={20} /><div><b>How this works</b><p>Confirming a meal deducts its ingredients. The order list uses your stock thresholds—not AI guesses—so quantities remain predictable. Your edits to this list are remembered.</p></div></div>
       </section>}
 
+      {tab === 'family' && household && <FamilyPage
+        voters={voters}
+        preferences={preferences}
+        voterPreferences={voterPreferences}
+        busy={false}
+        onAddVoter={async (name) => {
+          try {
+            const v = await api.addVoterRow(household.id, name, generateCode())
+            setVoters((prev) => [...prev, v])
+            setVoterIndex((prev) => ({ ...prev, [v.name]: v.id }))
+          } catch (e) { console.error(e); alert('Could not add member.') }
+        }}
+        onRemoveVoter={async (id) => {
+          try {
+            await api.removeVoterRow(id)
+            setVoters((prev) => prev.filter((v) => v.id !== id))
+            setVoterIndex((prev) => {
+              const next: Record<string, string> = {}
+              for (const k of Object.keys(prev)) {
+                if (prev[k] !== id) next[k] = prev[k]
+              }
+              return next
+            })
+          } catch (e) { console.error(e); alert('Could not remove member.') }
+        }}
+        onAddPreference={async (voterId, slot, mealName) => {
+          try {
+            const pref = await api.addVoterPreference({ voter_id: voterId, slot, day_of_week: null, meal_name: mealName, mood: null, strength: 1 })
+            setVoterPreferences((prev) => { return [...prev, pref] })
+          } catch (e) { console.error(e); alert('Could not add preference.') }
+        }}
+        onRemovePreference={async (id) => {
+          try {
+            await api.deleteVoterPreference(id)
+            setVoterPreferences((prev) => { return prev.filter((p) => p.id !== id) })
+          } catch (e) { console.error(e); alert('Could not remove preference.') }
+        }}
+      />}
+
       {tab === 'household' && <section className="page-section settings-page">
         <div className="page-heading"><span className="eyebrow"><Settings2 size={14} /> HOUSEHOLD RULES</span><h1>Your kitchen, your rules</h1><p>Set this once. Every meal suggestion will respect it.</p></div>
         <div className="settings-card">
@@ -1274,6 +1318,7 @@ function App() {
       <button className={tab === 'today' ? 'active' : ''} onClick={() => setTab('today')}><UtensilsCrossed /><span>Today</span></button>
       <button className={tab === 'inventory' ? 'active' : ''} onClick={() => setTab('inventory')}><Package /><span>Kitchen</span></button>
       <button className={tab === 'orders' ? 'active' : ''} onClick={() => setTab('orders')}><span className="icon-wrap"><ShoppingBasket />{lowStock > 0 && <i>{lowStock}</i>}</span><span>Orders</span></button>
+      <button className={tab === 'family' ? 'active' : ''} onClick={() => setTab('family')}><Users /><span>Family</span></button>
       <button className={tab === 'household' ? 'active' : ''} onClick={() => setTab('household')}><Settings2 /><span>Rules</span></button>
     </nav>
     {tutorialStep !== null && tab === 'today' && <TutorialOverlay
@@ -1296,6 +1341,10 @@ function App() {
   </div>
 }
 
+
+function FamilyPage({ voters, preferences }: { voters: api.Voter[]; preferences: { familyName: string; members: number; vegetarian: boolean }; voterPreferences: api.VoterMealPreference[]; busy: boolean; onAddVoter: (name: string) => Promise<void>; onRemoveVoter: (id: string) => Promise<void>; onAddPreference: (voterId: string, slot: api.MealSlot, mealName: string) => Promise<void>; onRemovePreference: (id: string) => Promise<void> }) {
+  return <section className="page-section"><h1>Family</h1><p>{preferences.familyName} — {voters.length} members</p></section>
+}
 function OrderList({ title, subtitle, items, empty, shareText, onShare }: { title: string; subtitle: string; items: { id: string; name: string; quantity: number; unit: string }[]; empty: string; shareText: string; onShare: (text: string) => void }) {
   return <article className="order-card"><div className="order-head"><div><h2>{title}</h2><p>{subtitle}</p></div><span>{items.length}</span></div>
     {items.length === 0 ? <div className="empty-state"><Check size={22} />{empty}</div> : <ul>{items.map((item) => <li key={item.id}><label><input type="checkbox" /><span><b>{item.name}</b><small>Bring stock back to target</small></span></label><strong>{item.quantity.toLocaleString()} {item.unit}</strong></li>)}</ul>}
