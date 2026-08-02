@@ -203,12 +203,14 @@ function OrderListEditor({ title, subtitle, baseItems, slot, householdId, custom
 
 function SignIn() {
   const signInWithGoogle = async () => {
-    // Redirect back to where the user started, not always to prod. In dev
-    // (localhost:5173) this brings the OAuth callback back to the dev
-    // server, so sign-in works locally. In prod (kya-banayein-theta.vercel.app)
-    // it goes back to the same URL. The earlier hardcoded value forced all
-    // sign-ins to prod, which broke local testing.
-    const redirectTo = typeof window !== 'undefined' ? window.location.origin : 'https://kya-banayein-theta.vercel.app'
+
+    // Always redirect back to the canonical app URL. Using
+    // window.location.origin was a footgun: any tab that initiated the
+    // sign-in while on localhost (e.g. with `npm run dev` running) sent
+    // the post-OAuth callback there, and Supabase happily redirected the
+    // user to localhost after Google sign-in.
+    const redirectTo = 'https://kya-banayein-theta.vercel.app'
+
     await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: { redirectTo },
