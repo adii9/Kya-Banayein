@@ -320,3 +320,115 @@ export const deleteVoterPreference = async (id: string) => {
   const { error } = await table('voter_meal_preferences').delete().eq('id', id)
   if (error) throw error
 }
+
+// ============================================================================
+// User-authored meals — household-scoped recipes the user builds themselves.
+// ============================================================================
+
+// Mirrors the mealEngine.Dish shape so a user meal can flow through the
+// existing rendering pipeline (recommendMeals → MealOption → UI). One
+// user_meal row = one Dish entry. To bundle multiple dishes into one
+// recommended meal, we group by a shared `meal_title` on the client.
+export type UserMeal = {
+  id: string
+  household_id: string
+  name: string                  // dish name ("Rajma")
+  description: string           // short subtitle
+  time: number                  // cook minutes
+  vegetarian: boolean
+  kind: 'main' | 'side' | 'bread' | 'rice'
+  color: string | null
+  ingredients: { ingredientId: string; quantity: number }[]
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+export const fetchUserMeals = async (householdId: string): Promise<UserMeal[]> => {
+  const { data, error } = await table('user_meals')
+    .select('*')
+    .eq('household_id', householdId)
+    .order('sort_order', { ascending: true })
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return (data ?? []) as UserMeal[]
+}
+
+export const addUserMeal = async (householdId: string, meal: Omit<UserMeal, 'id' | 'household_id' | 'created_at' | 'updated_at'>): Promise<UserMeal> => {
+  const row = { household_id: householdId, ...meal }
+  const { data, error } = await table('user_meals').insert(row).select('*').single()
+  if (error) throw error
+  return data as UserMeal
+}
+
+export const updateUserMeal = async (id: string, patch: Partial<Omit<UserMeal, 'id' | 'household_id' | 'created_at'>>): Promise<UserMeal> => {
+  const { data, error } = await table('user_meals')
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select('*')
+    .single()
+  if (error) throw error
+  return data as UserMeal
+}
+
+export const deleteUserMeal = async (id: string) => {
+  const { error } = await table('user_meals').delete().eq('id', id)
+  if (error) throw error
+}
+
+// ============================================================================
+// Per-household overrides for curated DISHES (hide / edit)
+// ============================================================================
+
+// One row per (household_id, dish_id). `hidden` filters the dish out of
+// the household's pool; `override` replaces the curated fields when set.
+// Both can coexist (hidden takes priority; override fields are ignored
+// while hidden — we don't surface hidden dishes for editing).
+export type DishOverrideRow = {
+  id: string
+  household_id: string
+  dish_id: string
+  hidden: boolean
+  override: Dish | null
+  created_at: string
+  updated_at: string
+}
+
+export const fetchDishOverrides = async (householdId: string): Promise<DishOverrideRow[]> => {
+  const { data, error } = await table('household_dish_overrides')
+    .select('*')
+    .eq('household_id', householdId)
+  if (error) throw error
+  return (data ?? []) as DishOverrideRow[]
+}
+
+// Upsert a hide-or-edit override for one curated dish. Pass both
+// `hidden` and `override` fields — the row is keyed by
+// (household_id, dish_id), so subsequent calls just update it.
+export const upsertDishOverride = async (
+  householdId: string,
+  dishId: string,
+  patch: { hidden?: boolean; override?: Dish | null },
+): Promise<DishOverrideRow> => {
+  const row = {
+    household_id: householdId,
+    dish_id: dishId,
+    hidden: patch.hidden ?? false,
+    override: patch.override ?? null,
+    updated_at: new Date().toISOString(),
+  }
+  const { data, error } = await table('household_dish_overrides')
+    .upsert(row, { onConflict: 'household_id,dish_id' })
+    .select('*')
+    .single()
+  if (error) throw error
+  return data as DishOverrideRow
+}
+
+export const deleteDishOverride = async (householdId: string, dishId: string) => {
+  const { error } = await table('household_dish_overrides')
+    .delete()
+    .eq('household_id', householdId)
+    .eq('dish_id', dishId)
+  if (error) throw error
+}

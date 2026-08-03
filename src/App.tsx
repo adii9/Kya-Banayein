@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { Check, ChevronRight, Clock3, Eye, EyeOff, LogOut, MessageCircle, Mic, MicOff, Minus, Package, Plus, RotateCcw, Send, Settings2, Share2, ShoppingBasket, Sparkles, Users, UtensilsCrossed, Volume2, Vote, X } from 'lucide-react'
+import { Check, ChevronRight, Clock3, Eye, EyeOff, Leaf, LogOut, MessageCircle, Mic, MicOff, Minus, Package, Plus, RotateCcw, Send, Settings2, Share2, ShoppingBasket, Sparkles, Trash2, Users, UtensilsCrossed, Volume2, Vote, X } from 'lucide-react'
 import './App.css'
-import { confirmMeal, DEFAULT_INVENTORY, getOrderSuggestions, recommendMeals, type InventoryItem, type MealOption } from './mealEngine'
+import { buildDishOverrideMap, confirmMeal, DEFAULT_INVENTORY, DISHES, getOrderSuggestions, recommendMeals, type Dish, type InventoryItem, type MealOption, type UserDish } from './mealEngine'
 import { parseCommand, SUPPORTED_LANGS, type ChatIntent } from './chatBot'
 import { addVoter as _addVoter, buildWhatsAppShareUrl, castVote as _castVote, createPoll, getResults, type Poll, type PollResult } from './voting'
 import { supabase, SUPABASE_URL } from './supabase'
@@ -10,7 +10,7 @@ import * as api from './api'
 import { KITCHEN_GROUPS, type KitchenTemplateItem } from './kitchenTemplate'
 import type { Dislike } from './api'
 
-type Tab = 'today' | 'inventory' | 'orders' | 'family' | 'household' | 'onboarding' | 'join'
+type Tab = 'today' | 'inventory' | 'orders' | 'family' | 'household' | 'recipes' | 'onboarding' | 'join'
 
 type Preferences = {
   familyName: string
@@ -89,6 +89,13 @@ const generateCode = (): string => {
   for (let i = 0; i < 5; i += 1) out += ALPHABET[Math.floor(Math.random() * ALPHABET.length)]
   return out
 }
+
+// Asia/Kolkata-aware YYYY-MM-DD key. JS Date.toISOString() is always
+// UTC, so an Indian user at 11pm IST would get "tomorrow" on the slot
+// selector and "yesterday" in their meal history. en-CA gives the
+// ISO-8601 date shape we need for the plan_date key.
+const IST_TZ = 'Asia/Kolkata'
+const istDateKey = (d: Date): string => new Intl.DateTimeFormat('en-CA', { timeZone: IST_TZ }).format(d)
 
 function Counter({ value, setValue, min = 1, max = 6 }: { value: number; setValue: (value: number) => void; min?: number; max?: number }) {
   return <div className="counter-control">
@@ -483,6 +490,7 @@ function KitchenOnboarding({ session, onComplete }: { session: Session; onComple
         <span className="eyebrow"><Sparkles size={14} /> NAMASTE</span>
         <h1>Aapka swagat hai 🙏</h1>
         <p>Let's set up your kitchen in 5 quick steps. You'll pick what you actually have at home — atta, daal, masala, sabziyan, the works. No need to remember everything; you can edit it any time.</p>
+        <p className="onboarding-footnote">Later, the <b>Recipes</b> tab lets you add your own dishes (Aloo Paratha, Maggi, your kid's favourite) and even tweak the curated ones.</p>
         <label className="onboarding-field">
           <span>What should we call your kitchen?</span>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Mathur Parivaar" autoFocus />
@@ -717,7 +725,7 @@ function App() {
   const todayLabel = `${weekday} ${mealOfDay}`
   const greeting = hour < 11 ? 'Subah ka kya banayein?' : hour < 16 ? 'Dopahar ka kya banayein?' : 'Shaam ka kya banayein?'
   const mealNoun = mealOfDay === 'BREAKFAST' ? "Today's breakfast" : mealOfDay === 'LUNCH' ? "Today's lunch" : mealOfDay === 'SNACKS' ? "Today's snacks" : "Tonight's dinner"
-  const todayKey = now.toISOString().slice(0, 10)
+  const todayKey = istDateKey(now)
   const [preferences, setPreferences] = useState<Preferences>(() => migratePreferences(load('kya-preferences', DEFAULT_PREFERENCES)))
   const [inventory, setInventory] = useState<InventoryItem[]>(() => load('kya-inventory', DEFAULT_INVENTORY))
   // Order list customisations (loaded fresh on each refresh of orderVersion).
@@ -747,6 +755,12 @@ function App() {
   const [votesToday, setVotesToday] = useState<Record<string, string>>({})
   const [voterPreferences, setVoterPreferences] = useState<api.VoterMealPreference[]>([])
   const [mealHistory, setMealHistory] = useState<api.MealHistoryRow[]>([])
+  // User-authored meals: persisted in Supabase and merged into the Today
+  // pool. Defaults to [] when not signed in (e.g., on the join screen).
+  const [userMeals, setUserMeals] = useState<api.UserMeal[]>([])
+  // Per-household overrides for the curated DISHES list (hide + edit).
+  // Empty map means "use the curated DISHES as-is". Hydrated on bootstrap.
+  const [dishOverrides, setDishOverrides] = useState<api.DishOverrideRow[]>([])
   // Day plan: 3 slots per day, each with an optional meal plan.
   const [mealPlansByDate, setMealPlansByDate] = useState<Record<string, api.MealPlan[]>>({})
   const [selectedSlot, setSelectedSlot] = useState<api.MealSlot>('DINNER')
@@ -776,11 +790,20 @@ function App() {
   // Detect a ?join=... share link on mount. If the user is already signed
   // in, look up the household immediately and surface the join screen. If
   // not, remember the code so we can show it after they sign in.
+  // We also accept the legacy ?household=<uuid> form (older share text
+  // wrote that), but only if no join_code is present.
   useEffect(() => {
     if (typeof window === 'undefined') return
     const params = new URLSearchParams(window.location.search)
-    const code = params.get('join')
-    if (!code) return
+    let code = params.get('join')
+    if (!code) {
+      const legacy = params.get('household')
+      if (!legacy) return
+      // The legacy form is a household UUID, not a join code. We can't
+      // resolve it back to a code without a separate lookup — for now,
+      // just bail. New shares use ?join= so this branch is rare.
+      return
+    }
     if (!session?.user?.id) return
     let cancelled = false
     api.fetchHouseholdByJoinCode(code).then((h) => {
@@ -806,25 +829,29 @@ function App() {
         if (!hh.join_code) {
           api.generateAndSetJoinCode(hh).then((updated) => setHousehold(updated)).catch((e) => console.warn('Could not generate join code', e))
         }
-        const [inv, voters, votes, history, overrides, plans, voterPrefs] = await Promise.all([
+        const [inv, voters, votes, history, overrides, plans, voterPrefs, um, dishOv] = await Promise.all([
           api.fetchInventory(hh.id),
           api.fetchVoters(hh.id),
           api.fetchVotesToday(hh.id),
           api.fetchMealHistory(hh.id, 7),
           api.fetchOrderOverrides(hh.id),
-          api.fetchMealPlansForDay(hh.id, new Date().toISOString().slice(0, 10)),
+          api.fetchMealPlansForDay(hh.id, istDateKey(new Date())),
           api.fetchHouseholdPreferences(hh.id),
+          api.fetchUserMeals(hh.id),
+          api.fetchDishOverrides(hh.id),
         ])
         if (cancelled) return
         setInventory(inv)
         setMealHistory(history)
         setVoterPreferences(voterPrefs)
         setVoters(voters)
+        setUserMeals(um)
+        setDishOverrides(dishOv)
         setCustomOrderItems({
           weekly: overrides.filter((o) => o.slot === 'weekly' && o.action === 'add').map((o) => ({ id: o.id, name: o.custom_name ?? '', quantity: o.custom_quantity ?? 0, unit: o.custom_unit ?? 'g' })),
           monthly: overrides.filter((o) => o.slot === 'monthly' && o.action === 'add').map((o) => ({ id: o.id, name: o.custom_name ?? '', quantity: o.custom_quantity ?? 0, unit: o.custom_unit ?? 'g' })),
         })
-        setMealPlansByDate({ [new Date().toISOString().slice(0, 10)]: plans })
+        setMealPlansByDate({ [istDateKey(new Date())]: plans })
         const idx: Record<string, string> = {}
         voters.forEach((v) => { idx[v.name] = v.id })
         setVoterIndex(idx)
@@ -855,7 +882,7 @@ function App() {
     return () => clearTimeout(t)
   }, [preferences.familyName, preferences.members, preferences.vegetarian, voting.enabled, preferences.dislikes, household])
 
-  const mealOptions = useMemo(() => recommendMeals(preferences, inventory), [preferences, inventory])
+  const mealOptions = useMemo(() => recommendMeals(preferences, inventory, userMealsToDishes(userMeals), buildDishOverrideMap(dishOverrides)), [preferences, inventory, userMeals, dishOverrides])
   const orders = useMemo(() => getOrderSuggestions(inventory), [inventory])
   const lowStock = orders.weekly.length + orders.monthly.length
   const voteResult: PollResult = useMemo(() => {
@@ -1063,7 +1090,14 @@ function App() {
 
   const voteShareText = (name: string) => {
     const options = mealOptions.map((m, i) => `${i + 1}. ${m.title} (${m.dishes.map((d) => d.name).join(' + ')})`).join('\n')
-    return `🍛 Aaj dinner vote karo!\n\nOpen: ${SUPABASE_URL.slice(8)}/?household=${household?.id ?? ''}\nAapka code: ${name}\n\nOptions:\n${options}`
+    // Use the join_code (not the household UUID). The App reads
+    // ?join=<code> from URL params on mount; the old text wrote
+    // ?household=<uuid> which the app ignored and the recipient
+    // landed on Today without ever seeing the JoinScreen.
+    const joinUrl = household?.join_code
+      ? `${SUPABASE_URL.slice(8)}/?join=${household.join_code}`
+      : `${SUPABASE_URL.slice(8)}/`
+    return `🍛 Aaj dinner vote karo!\n\nOpen: ${joinUrl}\nAapka code: ${name}\n\nOptions:\n${options}`
   }
 
   const shareOnWhatsApp = (text: string) => window.open(buildWhatsAppShareUrl(text), '_blank', 'noopener')
@@ -1116,6 +1150,19 @@ function App() {
             <label><span>Dishes per meal</span><Counter value={preferences.dishesPerMeal} setValue={(dishesPerMeal) => setPreferences({ ...preferences, dishesPerMeal })} /></label>
           </div>
         </section>
+
+        <div className="veg-mode-pill" data-veg={preferences.vegetarian}>
+          <Leaf size={16} />
+          <span><b>{preferences.vegetarian ? 'Pure vegetarian' : 'Veg + non-veg'}</b><small>Tap to switch — suggestions update instantly</small></span>
+          <button
+            className={`veg-toggle ${preferences.vegetarian ? 'on' : 'off'}`}
+            onClick={() => setPreferences((p) => ({ ...p, vegetarian: !p.vegetarian }))}
+            aria-label="Toggle vegetarian mode"
+            aria-pressed={preferences.vegetarian}
+          >
+            <span className="veg-toggle-knob" />
+          </button>
+        </div>
 
         <div className="slot-selector">
           {(['BREAKFAST', 'LUNCH', 'DINNER'] as const).map((s) => {
@@ -1225,6 +1272,11 @@ function App() {
             return { ...p, dislikes: [...withoutDup, { name: name.trim(), slot: slot ?? null }] }
           })}
         />}
+
+        {userMeals.length === 0 && <section className="recipes-cta">
+          <div><span className="eyebrow"><Sparkles size={14} /> MAKE IT YOURS</span><h3>Want your own dishes here?</h3><p>Add your Maggi, Aloo Paratha, or Paneer Bhurji to the Recipes tab — they'll show up on Today, with your veg/non-veg filter respected.</p></div>
+          <button className="primary" onClick={() => setTab('recipes')}><Plus size={16} /> Open Recipes</button>
+        </section>}
 
         {mealHistory.length > 0 && <section className="history-section">
           <div className="page-heading"><span className="eyebrow"><Clock3 size={14} /> THIS WEEK</span><h2>Recently cooked</h2><p>Last {mealHistory.length} meal{mealHistory.length === 1 ? '' : 's'} you've confirmed. Use this to avoid repeats.</p></div>
@@ -1384,6 +1436,55 @@ function App() {
           }}><Sparkles size={17} /> Re-run pantry setup</button>
         </div>
       </section>}
+
+      {tab === 'recipes' && household && <RecipesTab
+        userMeals={userMeals}
+        inventory={inventory}
+        dishOverrides={dishOverrides}
+        onCreate={async (meal) => {
+          try {
+            const created = await api.addUserMeal(household.id, meal)
+            setUserMeals((prev) => [...prev, created])
+            return created
+          } catch (e) { console.error(e); return null }
+        }}
+        onUpdate={async (id, patch) => {
+          try {
+            const updated = await api.updateUserMeal(id, patch)
+            setUserMeals((prev) => prev.map((m) => m.id === id ? updated : m))
+            return updated
+          } catch (e) { console.error(e); return null }
+        }}
+        onDelete={async (id) => {
+          await api.deleteUserMeal(id)
+          setUserMeals((prev) => prev.filter((m) => m.id !== id))
+        }}
+        onHideCurated={async (dishId) => {
+          const row = await api.upsertDishOverride(household.id, dishId, { hidden: true })
+          setDishOverrides((prev) => {
+            const others = prev.filter((o) => o.dish_id !== dishId)
+            return [...others, row]
+          })
+        }}
+        onEditCurated={async (dishId, override) => {
+          const row = await api.upsertDishOverride(household.id, dishId, { hidden: false, override })
+          setDishOverrides((prev) => {
+            const others = prev.filter((o) => o.dish_id !== dishId)
+            return [...others, row]
+          })
+        }}
+        onUnhideCurated={async (dishId) => {
+          // Unhide: drop the override row entirely so the curated default
+          // returns. Simpler than flipping hidden=false, and matches the
+          // "Reset" path's intent.
+          await api.deleteDishOverride(household.id, dishId)
+          setDishOverrides((prev) => prev.filter((o) => o.dish_id !== dishId))
+        }}
+        onResetCurated={async (dishId) => {
+          await api.deleteDishOverride(household.id, dishId)
+          setDishOverrides((prev) => prev.filter((o) => o.dish_id !== dishId))
+        }}
+      />}
     </main>
 
     <button className="chat-fab" onClick={() => setChatOpen(true)} aria-label="Open assistant"><MessageCircle size={22} /></button>
@@ -1423,6 +1524,7 @@ function App() {
       <button className={tab === 'inventory' ? 'active' : ''} onClick={() => setTab('inventory')}><Package /><span>Kitchen</span></button>
       <button className={tab === 'orders' ? 'active' : ''} onClick={() => setTab('orders')}><span className="icon-wrap"><ShoppingBasket />{lowStock > 0 && <i>{lowStock}</i>}</span><span>Orders</span></button>
       <button className={tab === 'family' ? 'active' : ''} onClick={() => setTab('family')}><Users /><span>Family</span></button>
+      <button className={tab === 'recipes' ? 'active' : ''} onClick={() => setTab('recipes')}><UtensilsCrossed /><span>Recipes</span></button>
       <button className={tab === 'household' ? 'active' : ''} onClick={() => setTab('household')}><Settings2 /><span>Rules</span></button>
     </nav>
     {tutorialStep !== null && tab === 'today' && <TutorialOverlay
@@ -1527,6 +1629,411 @@ function OrderList({ title, subtitle, items, empty, shareText, onShare }: { titl
     {items.length === 0 ? <div className="empty-state"><Check size={22} />{empty}</div> : <ul>{items.map((item) => <li key={item.id}><label><input type="checkbox" /><span><b>{item.name}</b><small>Bring stock back to target</small></span></label><strong>{item.quantity.toLocaleString()} {item.unit}</strong></li>)}</ul>}
     {items.length > 0 && <button className="secondary" onClick={() => onShare(shareText)}><Share2 size={17} /> Share list on WhatsApp</button>}
   </article>
+}
+
+// ============================================================================
+// User Meals — Recipes tab + editor
+// ============================================================================
+
+// Convert a user_meals row to a Dish so it can flow through recommendMeals.
+// Stable kind fallback, default color (warm), and ingredients coercion keep
+// the engine happy even when a user submits partial data.
+const userMealsToDishes = (rows: api.UserMeal[]): UserDish[] => rows.map((r) => ({
+  id: `user-${r.id}`,
+  name: r.name,
+  description: r.description,
+  time: r.time,
+  vegetarian: r.vegetarian,
+  kind: (r.kind === 'main' || r.kind === 'side' || r.kind === 'bread' || r.kind === 'rice') ? r.kind : 'main',
+  color: r.color ?? '#b96d35',
+  ingredients: (r.ingredients ?? []).filter((i) => i && typeof i.ingredientId === 'string' && typeof i.quantity === 'number'),
+}))
+
+const MEAL_COLOR_SWATCHES = ['#dca531', '#4d793d', '#b96d35', '#923d2f', '#d6b96c', '#cf7642', '#d08a32', '#a54f35']
+
+type RecipeDraft = {
+  name: string
+  description: string
+  time: number
+  vegetarian: boolean
+  kind: 'main' | 'side' | 'bread' | 'rice'
+  color: string
+  ingredients: { ingredientId: string; quantity: number }[]
+}
+
+const emptyRecipeDraft = (): RecipeDraft => ({
+  name: '',
+  description: '',
+  time: 30,
+  vegetarian: true,
+  kind: 'main',
+  color: MEAL_COLOR_SWATCHES[0],
+  ingredients: [],
+})
+
+function RecipeEditor({
+  inventory,
+  draft,
+  setDraft,
+  onSave,
+  onCancel,
+  saving,
+  title,
+}: {
+  inventory: InventoryItem[]
+  draft: RecipeDraft
+  setDraft: (d: RecipeDraft) => void
+  onSave: () => void
+  onCancel: () => void
+  saving: boolean
+  title: string
+}) {
+  const invById = useMemo(() => new Map(inventory.map((i) => [i.id, i])), [inventory])
+  const addIngredient = () => setDraft({ ...draft, ingredients: [...draft.ingredients, { ingredientId: inventory[0]?.id ?? '', quantity: 100 }] })
+  const updateIngredient = (idx: number, patch: Partial<{ ingredientId: string; quantity: number }>) => setDraft({ ...draft, ingredients: draft.ingredients.map((ing, i) => i === idx ? { ...ing, ...patch } : ing) })
+  const removeIngredient = (idx: number) => setDraft({ ...draft, ingredients: draft.ingredients.filter((_, i) => i !== idx) })
+  const canSave = draft.name.trim().length > 1 && draft.ingredients.length > 0 && !saving
+
+  return <div className="recipe-editor">
+    <div className="page-heading">
+      <span className="eyebrow"><Sparkles size={14} /> YOUR RECIPES</span>
+      <h1>{title}</h1>
+      <p>One recipe = one dish. Add the ingredients it needs and we'll deduct them when you confirm a meal that includes it.</p>
+    </div>
+    <div className="recipe-form">
+      <label className="text-field">
+        <span>Dish name</span>
+        <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="e.g. Aloo Paratha, Egg Fried Rice, Paneer Bhurji" autoFocus />
+      </label>
+      <label className="text-field">
+        <span>Short subtitle (optional)</span>
+        <input value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} placeholder="e.g. Crispy stuffed parathas with butter" />
+      </label>
+      <div className="recipe-form-row">
+        <label className="setting-row">
+          <span><b>Cook time</b><small>Approximate minutes</small></span>
+          <input type="number" min={5} max={180} value={draft.time} onChange={(e) => setDraft({ ...draft, time: Math.max(5, Number(e.target.value) || 30) })} className="num-input" />
+        </label>
+        <label className="setting-row">
+          <span><b>Kind</b><small>How this dish fits a meal</small></span>
+          <select value={draft.kind} onChange={(e) => setDraft({ ...draft, kind: e.target.value as RecipeDraft['kind'] })}>
+            <option value="main">Main</option>
+            <option value="side">Side</option>
+            <option value="bread">Bread</option>
+            <option value="rice">Rice</option>
+          </select>
+        </label>
+      </div>
+      <label className="setting-row toggle-row">
+        <span><b>Vegetarian</b><small>Off when the dish uses eggs or meat</small></span>
+        <input type="checkbox" checked={draft.vegetarian} onChange={(e) => setDraft({ ...draft, vegetarian: e.target.checked })} />
+      </label>
+      <div className="setting-row">
+        <span><b>Color</b><small>For the card art</small></span>
+        <div className="color-swatches">
+          {MEAL_COLOR_SWATCHES.map((c) => <button key={c} aria-label={`Color ${c}`} className={`swatch ${draft.color === c ? 'active' : ''}`} style={{ background: c }} onClick={() => setDraft({ ...draft, color: c })} />)}
+        </div>
+      </div>
+      <div className="recipe-ingredients">
+        <div className="recipe-ingredients-head">
+          <span><b>Ingredients</b><small>Deducted from your kitchen when you confirm a meal</small></span>
+          <button className="secondary mini" onClick={addIngredient} disabled={inventory.length === 0}><Plus size={14} /> Add ingredient</button>
+        </div>
+        {inventory.length === 0 && <p className="recipe-hint">Your kitchen is empty. Add items from the Kitchen tab first.</p>}
+        {draft.ingredients.length === 0 && inventory.length > 0 && <p className="recipe-hint">No ingredients yet. Tap "Add ingredient" to pick what this dish uses.</p>}
+        {draft.ingredients.map((ing, idx) => {
+          const it = invById.get(ing.ingredientId)
+          return <div key={idx} className="recipe-ingredient-row">
+            <select value={ing.ingredientId} onChange={(e) => updateIngredient(idx, { ingredientId: e.target.value })}>
+              {inventory.map((i) => <option key={i.id} value={i.id}>{i.name} ({i.unit})</option>)}
+            </select>
+            <input type="number" min={1} value={ing.quantity} onChange={(e) => updateIngredient(idx, { quantity: Math.max(1, Number(e.target.value) || 1) })} className="num-input" />
+            <small>{it?.unit ?? 'g'}</small>
+            <button className="reset-button mini" onClick={() => removeIngredient(idx)} aria-label="Remove"><X size={14} /></button>
+          </div>
+        })}
+      </div>
+      <div className="recipe-actions">
+        <button className="primary" onClick={onSave} disabled={!canSave}>{saving ? 'Saving…' : <><Check size={17} /> Save recipe</>}</button>
+        <button className="reset-button" onClick={onCancel} disabled={saving}>Cancel</button>
+      </div>
+    </div>
+  </div>
+}
+
+function RecipesTab({
+  userMeals,
+  inventory,
+  dishOverrides,
+  onCreate,
+  onUpdate,
+  onDelete,
+  onHideCurated,
+  onEditCurated,
+  onUnhideCurated,
+  onResetCurated,
+}: {
+  userMeals: api.UserMeal[]
+  inventory: InventoryItem[]
+  dishOverrides: api.DishOverrideRow[]
+  onCreate: (meal: Omit<api.UserMeal, 'id' | 'household_id' | 'created_at' | 'updated_at'>) => Promise<api.UserMeal | null>
+  onUpdate: (id: string, patch: Partial<api.UserMeal>) => Promise<api.UserMeal | null>
+  onDelete: (id: string) => Promise<void>
+  onHideCurated: (dishId: string) => Promise<void>
+  onEditCurated: (dishId: string, override: Dish) => Promise<void>
+  onUnhideCurated: (dishId: string) => Promise<void>
+  onResetCurated: (dishId: string) => Promise<void>
+}) {
+  const [editing, setEditing] = useState<{ mode: 'create' } | { mode: 'edit'; id: string } | null>(null)
+  const [editingCurated, setEditingCurated] = useState<Dish | null>(null)
+  const [draft, setDraft] = useState<RecipeDraft>(emptyRecipeDraft())
+  const [saving, setSaving] = useState(false)
+  const [tab, setCuratedTab] = useState<'yours' | 'curated'>('yours')
+
+  const startCreate = () => { setDraft(emptyRecipeDraft()); setEditing({ mode: 'create' }) }
+  const startEdit = (m: api.UserMeal) => {
+    setDraft({
+      name: m.name,
+      description: m.description,
+      time: m.time,
+      vegetarian: m.vegetarian,
+      kind: (m.kind as RecipeDraft['kind']) || 'main',
+      color: m.color ?? MEAL_COLOR_SWATCHES[0],
+      ingredients: m.ingredients ?? [],
+    })
+    setEditing({ mode: 'edit', id: m.id })
+  }
+  const cancel = () => { setEditing(null); setSaving(false) }
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      if (editing?.mode === 'create') {
+        const created = await onCreate({
+          name: draft.name.trim(),
+          description: draft.description.trim(),
+          time: draft.time,
+          vegetarian: draft.vegetarian,
+          kind: draft.kind,
+          color: draft.color,
+          ingredients: draft.ingredients,
+          sort_order: userMeals.length,
+        })
+        if (created) setEditing(null)
+      } else if (editing?.mode === 'edit') {
+        const updated = await onUpdate(editing.id, {
+          name: draft.name.trim(),
+          description: draft.description.trim(),
+          time: draft.time,
+          vegetarian: draft.vegetarian,
+          kind: draft.kind,
+          color: draft.color,
+          ingredients: draft.ingredients,
+        })
+        if (updated) setEditing(null)
+      }
+    } catch (e) {
+      console.error('Save recipe failed:', e)
+      alert('Could not save recipe. Try again.')
+    } finally { setSaving(false) }
+  }
+
+  if (editing) {
+    return <RecipeEditor
+      inventory={inventory}
+      draft={draft}
+      setDraft={setDraft}
+      onSave={save}
+      onCancel={cancel}
+      saving={saving}
+      title={editing.mode === 'create' ? 'New recipe' : `Edit ${draft.name || 'recipe'}`}
+    />
+  }
+
+  if (editingCurated) {
+    return <CuratedDishEditor
+      dish={editingCurated}
+      inventory={inventory}
+      hasExistingOverride={Boolean(dishOverrides.find((o) => o.dish_id === editingCurated.id && o.override))}
+      onSave={async (override) => {
+        try { await onEditCurated(editingCurated.id, override); setEditingCurated(null) }
+        catch (e) { console.error(e); alert('Could not save changes. Try again.') }
+      }}
+      onCancel={() => setEditingCurated(null)}
+    />
+  }
+
+  const ovByDishId = new Map(dishOverrides.map((o) => [o.dish_id, o]))
+
+  return <section className="page-section recipes-page">
+    <div className="page-heading">
+      <span className="eyebrow"><Sparkles size={14} /> YOUR RECIPES</span>
+      <h1>Meals you've built</h1>
+      <p>Create your own recipes, or tweak the curated dishes we ship with. Both kinds show up on Today — filtered by your household's vegetarian setting.</p>
+    </div>
+    <div className="recipes-tabs" role="tablist">
+      <button role="tab" aria-selected={tab === 'yours'} className={`recipes-tab ${tab === 'yours' ? 'active' : ''}`} onClick={() => setCuratedTab('yours')}>Your recipes <em>{userMeals.length}</em></button>
+      <button role="tab" aria-selected={tab === 'curated'} className={`recipes-tab ${tab === 'curated' ? 'active' : ''}`} onClick={() => setCuratedTab('curated')}>Curated dishes <em>{DISHES.length}</em></button>
+    </div>
+
+    {tab === 'yours' && <>
+      <div className="recipes-toolbar">
+        <button className="primary" onClick={startCreate}><Plus size={17} /> New recipe</button>
+      </div>
+      {userMeals.length === 0 ? <div className="empty-state">
+        <UtensilsCrossed size={28} />
+        <p>No recipes yet. Tap "New recipe" to add your first one — your favourite paratha, your Maggi, your kid's comfort meal.</p>
+      </div> : <div className="recipes-grid">
+        {userMeals.map((m) => <article key={m.id} className="recipe-card" style={{ '--meal-color': m.color ?? '#b96d35' } as React.CSSProperties}>
+          <div className="recipe-art"><div className="plate"><div className="food-shape" /></div></div>
+          <div className="recipe-body">
+            <div className="meal-meta">
+              <span><Clock3 size={15} /> {m.time} min</span>
+              <span>{m.vegetarian ? <><Leaf size={13} /> Veg</> : 'Non-veg'}</span>
+              <span>{m.kind}</span>
+            </div>
+            <h2>{m.name}</h2>
+            <p>{m.description || 'No description'}</p>
+            <ul>{m.ingredients.slice(0, 4).map((ing, i) => {
+              const it = inventory.find((x) => x.id === ing.ingredientId)
+              return <li key={i}><span className="dish-dot" style={{ background: m.color ?? '#b96d35' }} /><span><b>{it?.name ?? ing.ingredientId}</b><small>{ing.quantity} {it?.unit ?? 'g'}</small></span></li>
+            })}{m.ingredients.length > 4 && <li className="recipe-more">+{m.ingredients.length - 4} more</li>}</ul>
+            <div className="recipe-card-actions">
+              <button className="reset-button mini" onClick={() => startEdit(m)}>Edit</button>
+              <button className="reset-button mini danger" onClick={async () => {
+                if (!window.confirm(`Delete "${m.name}"? It'll stop appearing in suggestions.`)) return
+                try { await onDelete(m.id) } catch (e) { console.error(e); alert('Could not delete. Try again.') }
+              }}><Trash2 size={14} /> Delete</button>
+            </div>
+          </div>
+        </article>)}
+      </div>}
+    </>}
+
+    {tab === 'curated' && <>
+      <p className="curated-hint">These are the dishes we ship by default. Hide the ones you never cook, or edit them — say "Egg Curry but with just 4 eggs" — and your change applies to your household only.</p>
+      <div className="recipes-grid">
+        {DISHES.map((d) => {
+          const ov = ovByDishId.get(d.id)
+          const isEdited = Boolean(ov?.override)
+          const isHidden = Boolean(ov?.hidden)
+          // Show the effective dish — override fields when present, curated otherwise.
+          const effective: Dish = ov?.override ? { ...d, ...ov.override } : d
+          return <article key={d.id} className={`recipe-card curated ${isHidden ? 'hidden' : ''} ${isEdited ? 'edited' : ''}`} style={{ '--meal-color': effective.color } as React.CSSProperties}>
+            <div className="recipe-art"><div className="plate"><div className="food-shape" /></div>
+              {isHidden && <span className="recipe-overlay-tag">Hidden</span>}
+              {isEdited && !isHidden && <span className="recipe-overlay-tag alt">Edited</span>}
+            </div>
+            <div className="recipe-body">
+              <div className="meal-meta">
+                <span><Clock3 size={15} /> {effective.time} min</span>
+                <span>{effective.vegetarian ? <><Leaf size={13} /> Veg</> : 'Non-veg'}</span>
+                <span>{effective.kind}</span>
+              </div>
+              <h2>{effective.name}</h2>
+              <p>{effective.description}</p>
+              <ul>{effective.ingredients.slice(0, 4).map((ing, i) => {
+                const it = inventory.find((x) => x.id === ing.ingredientId)
+                return <li key={i}><span className="dish-dot" style={{ background: effective.color }} /><span><b>{it?.name ?? ing.ingredientId}</b><small>{ing.quantity} {it?.unit ?? 'g'}</small></span></li>
+              })}{effective.ingredients.length > 4 && <li className="recipe-more">+{effective.ingredients.length - 4} more</li>}</ul>
+              <div className="recipe-card-actions">
+                <button className="reset-button mini" onClick={() => setEditingCurated(effective)}>Edit</button>
+                {isHidden ? <button className="reset-button mini" onClick={() => onUnhideCurated(d.id).catch((e) => { console.error(e); alert('Could not restore.') })}>Restore</button>
+                  : <button className="reset-button mini danger" onClick={async () => {
+                      if (!window.confirm(`Hide "${effective.name}"? It won't appear in your suggestions until you restore it.`)) return
+                      try { await onHideCurated(d.id) } catch (e) { console.error(e); alert('Could not hide. Try again.') }
+                    }}><Trash2 size={14} /> Hide</button>}
+                {(isEdited || isHidden) && <button className="reset-button mini" onClick={async () => {
+                  if (!window.confirm(`Reset "${effective.name}" to the curated default? Your edits (or hide) will be removed.`)) return
+                  try { await onResetCurated(d.id) } catch (e) { console.error(e); alert('Could not reset. Try again.') }
+                }}>Reset</button>}
+              </div>
+            </div>
+          </article>
+        })}
+      </div>
+    </>}
+  </section>
+}
+
+// Editor for an existing curated dish. Pre-fills with the current
+// effective values (override wins over curated). Save writes a fresh
+// override via onEditCurated — there's no "save as new", just edit-in-place.
+function CuratedDishEditor({
+  dish,
+  inventory,
+  hasExistingOverride,
+  onSave,
+  onCancel,
+}: {
+  dish: Dish
+  inventory: InventoryItem[]
+  hasExistingOverride: boolean
+  onSave: (override: Dish) => Promise<void>
+  onCancel: () => void
+}) {
+  const [name, setName] = useState(dish.name)
+  const [description, setDescription] = useState(dish.description)
+  const [time, setTime] = useState(dish.time)
+  const [vegetarian, setVegetarian] = useState(dish.vegetarian)
+  const [kind, setKind] = useState<RecipeDraft['kind']>(dish.kind)
+  const [color, setColor] = useState(dish.color)
+  const [ingredients, setIngredients] = useState<{ ingredientId: string; quantity: number }[]>(dish.ingredients)
+  const [saving, setSaving] = useState(false)
+  const invById = useMemo(() => new Map(inventory.map((i) => [i.id, i])), [inventory])
+  const addIngredient = () => setIngredients([...ingredients, { ingredientId: inventory[0]?.id ?? '', quantity: 100 }])
+  const updateIngredient = (idx: number, patch: Partial<{ ingredientId: string; quantity: number }>) => setIngredients(ingredients.map((ing, i) => i === idx ? { ...ing, ...patch } : ing))
+  const removeIngredient = (idx: number) => setIngredients(ingredients.filter((_, i) => i !== idx))
+  const canSave = name.trim().length > 1 && ingredients.length > 0 && !saving
+  const save = async () => {
+    setSaving(true)
+    try { await onSave({ id: dish.id, name: name.trim(), description: description.trim(), time, vegetarian, kind, color, ingredients }) }
+    finally { setSaving(false) }
+  }
+  return <div className="recipe-editor">
+    <div className="page-heading">
+      <span className="eyebrow"><Sparkles size={14} /> CURATED DISH</span>
+      <h1>Edit "{dish.name}"</h1>
+      <p>{hasExistingOverride ? 'You\'ve edited this dish before. Your saved fields are pre-filled — change any of them.' : 'Make this dish yours. Your change applies to your household only — every other home keeps the curated version.'}</p>
+    </div>
+    <div className="recipe-form">
+      <label className="text-field"><span>Dish name</span><input value={name} onChange={(e) => setName(e.target.value)} autoFocus /></label>
+      <label className="text-field"><span>Short subtitle</span><input value={description} onChange={(e) => setDescription(e.target.value)} /></label>
+      <div className="recipe-form-row">
+        <label className="setting-row"><span><b>Cook time</b><small>Approximate minutes</small></span><input type="number" min={5} max={180} value={time} onChange={(e) => setTime(Math.max(5, Number(e.target.value) || 30))} className="num-input" /></label>
+        <label className="setting-row"><span><b>Kind</b><small>How this dish fits a meal</small></span>
+          <select value={kind} onChange={(e) => setKind(e.target.value as RecipeDraft['kind'])}>
+            <option value="main">Main</option><option value="side">Side</option><option value="bread">Bread</option><option value="rice">Rice</option>
+          </select>
+        </label>
+      </div>
+      <label className="setting-row toggle-row"><span><b>Vegetarian</b><small>Off when the dish uses eggs or meat</small></span><input type="checkbox" checked={vegetarian} onChange={(e) => setVegetarian(e.target.checked)} /></label>
+      <div className="setting-row"><span><b>Color</b><small>For the card art</small></span>
+        <div className="color-swatches">{MEAL_COLOR_SWATCHES.map((c) => <button key={c} aria-label={`Color ${c}`} className={`swatch ${color === c ? 'active' : ''}`} style={{ background: c }} onClick={() => setColor(c)} />)}</div>
+      </div>
+      <div className="recipe-ingredients">
+        <div className="recipe-ingredients-head">
+          <span><b>Ingredients</b><small>Deducted from your kitchen when you confirm a meal</small></span>
+          <button className="secondary mini" onClick={addIngredient} disabled={inventory.length === 0}><Plus size={14} /> Add ingredient</button>
+        </div>
+        {ingredients.map((ing, idx) => {
+          const it = invById.get(ing.ingredientId)
+          return <div key={idx} className="recipe-ingredient-row">
+            <select value={ing.ingredientId} onChange={(e) => updateIngredient(idx, { ingredientId: e.target.value })}>
+              {inventory.map((i) => <option key={i.id} value={i.id}>{i.name} ({i.unit})</option>)}
+            </select>
+            <input type="number" min={1} value={ing.quantity} onChange={(e) => updateIngredient(idx, { quantity: Math.max(1, Number(e.target.value) || 1) })} className="num-input" />
+            <small>{it?.unit ?? 'g'}</small>
+            <button className="reset-button mini" onClick={() => removeIngredient(idx)} aria-label="Remove"><X size={14} /></button>
+          </div>
+        })}
+      </div>
+      <div className="recipe-actions">
+        <button className="primary" onClick={save} disabled={!canSave}>{saving ? 'Saving…' : <><Check size={17} /> Save changes</>}</button>
+        <button className="reset-button" onClick={onCancel} disabled={saving}>Cancel</button>
+      </div>
+    </div>
+  </div>
 }
 
 export default App

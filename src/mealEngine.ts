@@ -64,13 +64,70 @@ export const DEFAULT_INVENTORY: InventoryItem[] = [
   { id: 'chicken', name: 'Chicken', quantity: 0, unit: 'g', category: 'weekly', reorderAt: 300, targetStock: 1000 },
 ]
 
-const mealNames = ['Ghar ka favourite', 'Light & balanced', 'Quick comfort', 'Family special', 'Simple weekday meal']
+// A user-authored meal has the same shape as a Dish (and thus can be
+// rendered identically). The caller converts rows from user_meals into
+// this type before passing to recommendMeals.
+export type UserDish = Dish
+
+export const mealNames = ['Ghar ka favourite', 'Light & balanced', 'Quick comfort', 'Family special', 'Simple weekday meal']
+
+// Build a short title from the actual dishes in the meal. Used when the
+// caller wants the meal card to read "Rajma + Roti + Salad" instead of
+// the generic "Ghar ka favourite". Falls back to the generic label if
+// the meal has no dishes.
+export const mealTitleFromDishes = (dishes: Dish[]): string => {
+  if (dishes.length === 0) return mealNames[0]
+  const names = dishes.map((d) => d.name)
+  if (names.length === 1) return names[0]
+  if (names.length === 2) return `${names[0]} + ${names[1]}`
+  return `${names[0]} + ${names[1]} + ${names.slice(2).join(', ')}`
+}
+
+// Map keyed by curated Dish.id ('dal-tadka', 'chicken-curry', etc.).
+// Hidden dishes are excluded entirely; edited dishes have their fields
+// replaced (override wins where present, otherwise the curated value
+// stays). Built once per render via applyDishOverrides.
+export type DishOverrideMap = Record<string, { hidden: boolean; override: Partial<Dish> | null }>
+
+// Build the override map from raw DB rows.
+export const buildDishOverrideMap = (rows: { dish_id: string; hidden: boolean; override: Partial<Dish> | null }[]): DishOverrideMap => {
+  const map: DishOverrideMap = {}
+  for (const r of rows) {
+    map[r.dish_id] = { hidden: r.hidden, override: r.override }
+  }
+  return map
+}
+
+// Apply overrides to the curated DISHES list. Returns a new array with
+// hidden dishes filtered out and edited dishes field-replaced. Order is
+// preserved (important — it controls the order dishes show up on Today
+// once filtered by preference + scored by pantry match).
+export const applyDishOverrides = (dishes: Dish[], overrides: DishOverrideMap): Dish[] => {
+  return dishes.flatMap((d) => {
+    const o = overrides[d.id]
+    if (!o) return [d]
+    if (o.hidden) return []
+    if (o.override) return [{ ...d, ...o.override }]
+    return [d]
+  })
+}
 
 export function recommendMeals(
   preferences: { suggestionCount: number; dishesPerMeal: number; vegetarian: boolean },
   inventory: InventoryItem[],
+  // Optional user-authored meals. Each one is treated as a dish in the
+  // pool; the engine bundles them into the same multi-dish meals the
+  // curated DISHES produce. Vegetarian filter applies here too — a user
+  // meal with vegetarian=false won't surface in a pure-veg household.
+  userMeals: UserDish[] = [],
+  // Optional per-household overrides for the curated dishes. Hidden
+  // dishes are filtered out; edited dishes have their fields replaced.
+  // Pass an empty map (or omit) for the default curated behavior.
+  overrides: DishOverrideMap = {},
 ): MealOption[] {
-  const eligible = DISHES.filter((dish) => !preferences.vegetarian || dish.vegetarian)
+  const curated = applyDishOverrides(DISHES, overrides)
+  const allDishes: Dish[] = [...curated, ...userMeals]
+  const eligible = allDishes.filter((dish) => !preferences.vegetarian || dish.vegetarian)
   const stock = new Map(inventory.map((item) => [item.id, item.quantity]))
   const ranked = eligible
     .map((dish) => ({ dish, score: dish.ingredients.reduce((sum, use) => sum + Math.min((stock.get(use.ingredientId) ?? 0) / use.quantity, 1), 0) / Math.max(dish.ingredients.length, 1) }))
@@ -84,7 +141,11 @@ export function recommendMeals(
     const match = uses.length ? Math.round((available / uses.length) * 100) : 100
     return {
       id: `meal-${optionIndex}`,
-      title: mealNames[optionIndex % mealNames.length],
+      // Derive title from actual dishes when the pool is rich enough; fall
+      // back to the legacy generic label otherwise. Single-dish meals get
+      // the dish name; multi-dish meals get a " + " joined title. This
+      // makes the home page actually reflect what you're being offered.
+      title: mealTitleFromDishes(dishes),
       note: match >= 80 ? 'Mostly from your kitchen' : match >= 50 ? 'A few items needed' : 'Add to your next order',
       dishes,
       totalTime: Math.max(...dishes.map((dish) => dish.time)),
