@@ -90,6 +90,45 @@ const generateCode = (): string => {
   return out
 }
 
+// B11 fix: infer inventory category from item name. Used by chat-driven
+// inventory add when the user mentions an item that doesn't yet exist
+// in the kitchen. Heuristic:
+//   1. If any existing inventory item's name contains the new name
+//      (or vice versa), use that existing item's category. So
+//      "besan" matches an existing "Besan (gram flour)" and inherits
+//      its monthly category.
+//   2. Otherwise fall back to a name-based heuristic: fresh produce /
+//      dairy keywords → 'weekly', staple keywords → 'monthly'.
+//   3. Final fallback: 'weekly'. Better to over-stock fresh than miss
+//      a weekly restock.
+const STAPLE_KEYWORDS = [
+  'atta', 'rice', 'basmati', 'maida', 'besan', 'sooji', 'suji', 'rava', 'poha',
+  'dal', 'daal', 'toor', 'moong', 'chana', 'urad', 'masoor', 'rajma', 'chole', 'chana-dal',
+  'oil', 'ghee', 'vanaspati', 'mustard',
+  'masala', 'haldi', 'mirch', 'jeera', 'dhania', 'garam', 'hing', 'saunf', 'methi', 'kalonji', 'ajwain', 'amchur',
+  'salt', 'sugar', 'tea', 'coffee',
+]
+const FRESH_KEYWORDS = [
+  'onion', 'tomato', 'pyaz', 'tamatar',
+  'potato', 'aloo',
+  'bhindi', 'okra', 'cauliflower', 'gobi', 'peas', 'matar', 'cucumber', 'kheera',
+  'ginger', 'adrak', 'garlic', 'lahsun', 'coriander', 'dhania patta', 'mint', 'pudina', 'lemon', 'nimbu',
+  'curd', 'dahi', 'milk', 'paneer', 'cream', 'butter',
+  'egg', 'eggs', 'anda', 'chicken', 'fish', 'mutton', 'prawns',
+]
+const categoryForItem = (name: string, existing: InventoryItem[]): 'weekly' | 'monthly' => {
+  const lc = name.toLowerCase()
+  // 1) match existing inventory name
+  for (const it of existing) {
+    const il = it.name.toLowerCase()
+    if (il.includes(lc) || lc.includes(il)) return it.category
+  }
+  // 2) staple keyword wins over fresh (attarice won't match fresh; rice is staple)
+  if (STAPLE_KEYWORDS.some((k) => lc.includes(k))) return 'monthly'
+  if (FRESH_KEYWORDS.some((k) => lc.includes(k))) return 'weekly'
+  return 'weekly'
+}
+
 // Asia/Kolkata-aware YYYY-MM-DD key. JS Date.toISOString() is always
 // UTC, so an Indian user at 11pm IST would get "tomorrow" on the slot
 // selector and "yesterday" in their meal history. en-CA gives the
@@ -381,6 +420,10 @@ function KitchenOnboarding({ session, onComplete, forceOnboarding }: { session: 
   const [name, setName] = useState('My Kitchen')
   const [vegetarian, setVegetarian] = useState(false)
   const [voting, setVoting] = useState(false)
+  // B9 fix: family size was hard-coded to 4 in finish() even though
+  // Counter + Rules let users change it later. Now it's captured here
+  // and threaded through to household.members on create/update.
+  const [members, setMembers] = useState(4)
 
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -456,14 +499,14 @@ function KitchenOnboarding({ session, onComplete, forceOnboarding }: { session: 
       const hh = existing
         ? await api.updateHousehold(existing.id, {
             name: name.trim() || existing.name,
-            members: existing.members,
+            members,
             vegetarian,
             voting_enabled: voting,
             onboarding_complete: true,
           })
         : await api.createHousehold(session.user.id, {
             name: name.trim() || 'My Kitchen',
-            members: 4,
+            members,
             vegetarian,
             voting_enabled: voting,
             onboarding_complete: true,
@@ -508,6 +551,10 @@ function KitchenOnboarding({ session, onComplete, forceOnboarding }: { session: 
           <span>What should we call your kitchen?</span>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Mathur Parivaar" autoFocus />
         </label>
+        <div className="onboarding-row">
+          <span><b>Family size</b><small>Used to size ingredient quantities</small></span>
+          <Counter value={members} setValue={setMembers} max={12} />
+        </div>
         <label className="onboarding-row toggle">
           <span><b>Pure vegetarian household</b><small>No eggs or meat in suggestions</small></span>
           <input type="checkbox" checked={vegetarian} onChange={(e) => setVegetarian(e.target.checked)} />
@@ -952,7 +999,9 @@ function App() {
         })
         // Refresh the history so the new meal shows up immediately.
         api.fetchMealHistory(household.id, 7).then(setMealHistory).catch(() => {})
-      } catch (e) { console.error('Confirm sync failed:', e) }
+      // B12 fix: surface failures from fire-and-forget post-confirm syncs so
+      // the user knows the server didn't get the update (e.g. offline).
+      } catch (e) { console.error('Confirm sync failed:', e); alert('Could not sync the meal to the server. Your local inventory is updated but the history/plan may be stale — refresh to retry.') }
     }
   }
   const resetData = async () => {
@@ -1014,16 +1063,30 @@ function App() {
         const newQty = Math.max(0, existing.quantity + delta)
         const updated = inventory.map((i) => i.id === existing.id ? { ...i, quantity: newQty } : i)
         setInventory(updated)
-        api.updateInventoryItem(existing.id, newQty).catch((e) => console.error('Inventory update failed:', e))
+        api.updateInventoryItem(existing.id, newQty).catch((e) => { console.error('Inventory update failed:', e); alert('Could not update inventory. Try again.') })
         return `${intent.action === 'add' ? 'Added' : 'Used'} ${intent.quantity} ${intent.unit} of ${existing.name}. Now ${newQty} ${existing.unit} in stock.`
       } else if (intent.action === 'add') {
-        // No match — create a custom item.
-        api.addCustomInventoryItem(household.id, { name: intent.itemName.charAt(0).toUpperCase() + intent.itemName.slice(1), quantity: intent.quantity, unit: intent.unit, category: 'weekly' }).then(({ id }) => {
-          setInventory([...inventory, { id, name: intent.itemName, quantity: intent.quantity, unit: intent.unit, category: 'weekly', reorderAt: Math.max(1, Math.floor(intent.quantity * 0.5)), targetStock: intent.quantity, custom: true } as any])
-        }).catch((e) => console.error('Add custom item failed:', e))
-        return `Added ${intent.quantity} ${intent.unit} of new item "${intent.itemName}" to your kitchen.`
+        // No match — create a custom item with inferred category.
+        // B11 fix: pick weekly vs monthly based on item name + any
+        // matching existing inventory row. Falls back to 'weekly'.
+        const category = categoryForItem(intent.itemName, inventory)
+        const displayName = intent.itemName.charAt(0).toUpperCase() + intent.itemName.slice(1)
+        api.addCustomInventoryItem(household.id, { name: displayName, quantity: intent.quantity, unit: intent.unit, category }).then(({ id }) => {
+          setInventory([...inventory, { id, name: displayName, quantity: intent.quantity, unit: intent.unit, category, reorderAt: Math.max(1, Math.floor(intent.quantity * 0.5)), targetStock: intent.quantity, custom: true } as any])
+        }).catch((e) => { console.error('Add custom item failed:', e); alert('Could not add that item. Try again.') })
+        return `Added ${intent.quantity} ${intent.unit} of new item "${displayName}" to your kitchen (${category} restock).`
       } else {
-        return `I don't see ${intent.itemName} in your kitchen. Try adding it first, or use the kitchen tab.`
+        // B10 fix: "I used X" of an unknown item — auto-create with a
+        // tiny starting quantity so it lands in the kitchen instead
+        // of returning a polite dead-end. Quantity gets clamped to 1
+        // so the inventory doesn't go negative.
+        const category = categoryForItem(intent.itemName, inventory)
+        const displayName = intent.itemName.charAt(0).toUpperCase() + intent.itemName.slice(1)
+        const startQty = Math.max(1, intent.quantity)
+        api.addCustomInventoryItem(household.id, { name: displayName, quantity: startQty, unit: intent.unit, category }).then(({ id }) => {
+          setInventory([...inventory, { id, name: displayName, quantity: startQty, unit: intent.unit, category, reorderAt: Math.max(1, Math.floor(startQty * 0.5)), targetStock: startQty, custom: true } as any])
+        }).catch((e) => { console.error('Add missing item failed:', e); alert('Could not add that item. Try again.') })
+        return `${intent.itemName} wasn't in your kitchen — added it now with ${startQty} ${intent.unit}. You can adjust the quantity from the Kitchen tab.`
       }
     }
     // F2/F4 — plan a slot. Find the dish in the meal options, persist the
@@ -1143,7 +1206,10 @@ function App() {
   const castVoteFor = async (voterId: string, mealId: string) => {
     if (!household) return
     setVotesToday((m) => ({ ...m, [voterId]: mealId }))
-    try { await api.upsertVote(household.id, voterId, mealId) } catch (e) { console.error(e) }
+    // B12 fix: surface vote-write failures. We keep the optimistic local
+    // state so the UI doesn't flicker, but alert so the user knows the
+    // server didn't record the vote (e.g. voter row was deleted).
+    try { await api.upsertVote(household.id, voterId, mealId) } catch (e) { console.error(e); alert('Could not record vote. The tally may be stale — refresh to retry.') }
   }
 
   const voteShareText = (name: string) => {
@@ -1155,7 +1221,14 @@ function App() {
     const joinUrl = household?.join_code
       ? `${SUPABASE_URL.slice(8)}/?join=${household.join_code}`
       : `${SUPABASE_URL.slice(8)}/`
-    return `🍛 Aaj dinner vote karo!\n\nOpen: ${joinUrl}\nAapka code: ${name}\n\nOptions:\n${options}`
+    // B13 fix: the sender's household filter applies here, so a pure-veg
+    // sender already shared a veg-only list. But a non-veg sender's
+    // list contains non-veg options — the recipient's filter applies
+    // locally on first load, so the note is informational, not a bug.
+    const vegNote = preferences.vegetarian
+      ? 'Pure vegetarian list.'
+      : 'Includes non-veg options. Adjust your veg preference on the Today tab if needed.'
+    return `🍛 Aaj dinner vote karo!\n\n${vegNote}\n\nOpen: ${joinUrl}\nAapka code: ${name}\n\nOptions:\n${options}`
   }
 
   const shareOnWhatsApp = (text: string) => window.open(buildWhatsAppShareUrl(text), '_blank', 'noopener')
@@ -1391,10 +1464,30 @@ function App() {
             <strong>{item.quantity.toLocaleString()} <small>{item.unit}</small></strong>
             <div className="stock-track"><i style={{ width: `${percent}%` }} /></div>
             <div className="stock-actions">
-              <button onClick={async () => { const next = inventory.map((x) => x.id === item.id ? { ...x, quantity: Math.max(0, x.quantity - (x.unit === 'pcs' ? 1 : 100)) } : x); setInventory(next); const it = next.find((x) => x.id === item.id); if (it) { try { await api.updateInventoryItem(it.id, it.quantity) } catch (e) { console.error(e) } } }}><Minus size={16} /></button>
+              <button onClick={async () => {
+                const next = inventory.map((x) => x.id === item.id ? { ...x, quantity: Math.max(0, x.quantity - (x.unit === 'pcs' ? 1 : 100)) } : x)
+                setInventory(next)
+                const it = next.find((x) => x.id === item.id)
+                if (it) {
+                  try { await api.updateInventoryItem(it.id, it.quantity) }
+                  catch (e) { console.error(e); alert(`Could not sync ${item.name} to the server. Local quantity updated; refresh to retry.`) }
+                }
+              }}><Minus size={16} /></button>
               <span>{percent}% stocked</span>
-              <button onClick={async () => { const next = inventory.map((x) => x.id === item.id ? { ...x, quantity: Math.min(x.targetStock, x.quantity + (x.unit === 'pcs' ? 1 : 100)) } : x); setInventory(next); const it = next.find((x) => x.id === item.id); if (it) { try { await api.updateInventoryItem(it.id, it.quantity) } catch (e) { console.error(e) } } }}><Plus size={16} /></button>
-              {isCustom && <button className="remove-item" aria-label={`Remove ${item.name}`} onClick={async () => { if (!window.confirm(`Remove ${item.name} from your kitchen?`)) return; try { await api.deleteInventoryItem(item.id); setInventory(inventory.filter((x) => x.id !== item.id)) } catch (e) { console.error(e) } }}><X size={14} /></button>}
+              <button onClick={async () => {
+                const next = inventory.map((x) => x.id === item.id ? { ...x, quantity: Math.min(x.targetStock, x.quantity + (x.unit === 'pcs' ? 1 : 100)) } : x)
+                setInventory(next)
+                const it = next.find((x) => x.id === item.id)
+                if (it) {
+                  try { await api.updateInventoryItem(it.id, it.quantity) }
+                  catch (e) { console.error(e); alert(`Could not sync ${item.name} to the server. Local quantity updated; refresh to retry.`) }
+                }
+              }}><Plus size={16} /></button>
+              {isCustom && <button className="remove-item" aria-label={`Remove ${item.name}`} onClick={async () => {
+                if (!window.confirm(`Remove ${item.name} from your kitchen?`)) return
+                try { await api.deleteInventoryItem(item.id); setInventory(inventory.filter((x) => x.id !== item.id)) }
+                catch (e) { console.error(e); alert(`Could not delete ${item.name}. Refresh and try again.`) }
+              }}><X size={14} /></button>}
             </div>
           </article>
         })}</div>
