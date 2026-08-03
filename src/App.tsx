@@ -362,7 +362,7 @@ function JoinScreen({ code, household, onJoin, onCancel, busy }: {
 // or skip individual groups. Selected items are tracked in local state
 // during the wizard and bulk-saved at the end via api.bulkReplaceInventory.
 // =============================================================================
-function KitchenOnboarding({ session, onComplete }: { session: Session; onComplete: (household: api.Household) => void }) {
+function KitchenOnboarding({ session, onComplete, forceOnboarding }: { session: Session; onComplete: (household: api.Household) => void; forceOnboarding?: boolean }) {
   // Wizard state.
   const [stepIdx, setStepIdx] = useState(0)
   const steps = useMemo(() => ['welcome', ...KITCHEN_GROUPS.map((g) => g.id), 'summary'] as const, [])
@@ -449,14 +449,25 @@ function KitchenOnboarding({ session, onComplete }: { session: Session; onComple
     setBusy(true)
     setError(null)
     try {
-      // Step 1: create the household with the welcome-step fields.
-      const hh = await api.createHousehold(session.user.id, {
-        name: name.trim() || 'My Kitchen',
-        members: 4,
-        vegetarian,
-        voting_enabled: voting,
-        onboarding_complete: true,
-      })
+      // Step 1: create-or-update the household. For a fresh user
+      // (no household yet) we insert; for a re-run pantry setup
+      // (forceOnboarding=true), we update the existing row.
+      const existing = forceOnboarding ? await api.fetchHousehold(session.user.id) : null
+      const hh = existing
+        ? await api.updateHousehold(existing.id, {
+            name: name.trim() || existing.name,
+            members: existing.members,
+            vegetarian,
+            voting_enabled: voting,
+            onboarding_complete: true,
+          })
+        : await api.createHousehold(session.user.id, {
+            name: name.trim() || 'My Kitchen',
+            members: 4,
+            vegetarian,
+            voting_enabled: voting,
+            onboarding_complete: true,
+          })
       // Step 2: bulk-replace the inventory with the picked items (or
       // empty if the user skipped the pantry).
       const items = skipPantry
@@ -487,9 +498,11 @@ function KitchenOnboarding({ session, onComplete }: { session: Session; onComple
   if (currentStep === 'welcome') {
     return <div className="onboarding">
       <div className="onboarding-card onboarding-welcome">
-        <span className="eyebrow"><Sparkles size={14} /> NAMASTE</span>
-        <h1>Aapka swagat hai 🙏</h1>
-        <p>Let's set up your kitchen in 5 quick steps. You'll pick what you actually have at home — atta, daal, masala, sabziyan, the works. No need to remember everything; you can edit it any time.</p>
+        <span className="eyebrow"><Sparkles size={14} /> {forceOnboarding ? 'RE-RUN PANTRY SETUP' : 'NAMASTE'}</span>
+        <h1>{forceOnboarding ? 'Pantry setup, redux' : 'Aapka swagat hai 🙏'}</h1>
+        <p>{forceOnboarding
+          ? 'You\'re re-running pantry setup. Your kitchen items and household preferences will be replaced with what you pick below. Saved dishes, votes, and meal history will be cleared so the new kitchen starts fresh.'
+          : 'Let\'s set up your kitchen in 5 quick steps. You\'ll pick what you actually have at home — atta, daal, masala, sabziyan, the works. No need to remember everything; you can edit it any time.'}</p>
         <p className="onboarding-footnote">Later, the <b>Recipes</b> tab lets you add your own dishes (Aloo Paratha, Maggi, your kid's favourite) and even tweak the curated ones.</p>
         <label className="onboarding-field">
           <span>What should we call your kitchen?</span>
@@ -780,6 +793,11 @@ function App() {
   // the URL has a join code; cleared once the user joins or dismisses.
   const [pendingJoin, setPendingJoin] = useState<{ code: string; household?: { id: string; name: string } } | null>(null)
   const [joinBusy, setJoinBusy] = useState(false)
+  // B5 fix: a separate flag for "show the onboarding wizard" instead
+  // of nulling `household`. Bootstrap previously overwrote a null
+  // household with the existing row from Supabase, so the wizard
+  // never actually reappeared.
+  const [forceOnboarding, setForceOnboarding] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session: s } }) => { setSession(s); setBootstrapping(false) })
@@ -822,6 +840,10 @@ function App() {
         const hh = await api.fetchHousehold(session.user.id)
         if (cancelled) return
         if (!hh) { setTab('onboarding'); return }
+        // B5 fix: when the user explicitly asked to re-run pantry setup,
+        // we still load the existing household so the wizard can re-seed
+        // it via bulkReplaceInventory, but we don't surface the main app.
+        if (forceOnboarding) return
         setHousehold(hh)
         // Lazy-generate a join code if this household doesn't have one yet.
         // The SQL migration only backfills on the existing household; new
@@ -1008,8 +1030,11 @@ function App() {
     // plan, switch the active slot to whatever the user asked for.
     if (intent.kind === 'plan' && household) {
       const lc = intent.dishName.toLowerCase()
-      // Build a 1-meal recommendation so we can match against dish names.
-      const recs = recommendMeals({ suggestionCount: 6, dishesPerMeal: 4, vegetarian: preferences.vegetarian }, inventory)
+      // B8 fix: pass userMeals + dishOverrides so a chat-driven plan
+      // can match user-authored recipes and respect per-household
+      // curated-dish edits. The old call dropped both, so "dinner
+      // should be Maggi" failed to find a user-authored recipe.
+      const recs = recommendMeals({ suggestionCount: 6, dishesPerMeal: 4, vegetarian: preferences.vegetarian }, inventory, userMealsToDishes(userMeals), buildDishOverrideMap(dishOverrides))
       const matchMeal = recs.find((m) => m.dishes.some((d) => d.name.toLowerCase().includes(lc))) ?? recs[0]
       if (!matchMeal) return `Couldn't build a meal with ${intent.dishName}. Try a different dish name.`
       const matchedDish = matchMeal.dishes.find((d) => d.name.toLowerCase().includes(lc)) ?? matchMeal.dishes[0]
@@ -1019,13 +1044,28 @@ function App() {
       setSelectedSlot(intent.slot)
       return `${intent.slot.charAt(0) + intent.slot.slice(1).toLowerCase()} plan set: ${matchedDish.name}${intent.mood ? ` (${intent.mood})` : ''}. Tap the chip to see suggestions.`
     }
+    // B7 fix: preference-record intent writes a voter-keyed meal preference
+    // (voter_meal_preferences). The parser only emits this when the user
+    // both names a known voter and a slot keyword, so we never silently
+    // attach to the wrong person.
+    if (intent.kind === 'preference-record' && household) {
+      const voter = voters.find((v) => v.name.toLowerCase() === intent.voterName?.toLowerCase())
+        ?? voters[0]
+      if (!voter) return 'No family members yet. Add someone on the Family tab first.'
+      api.addVoterPreference({ voter_id: voter.id, slot: intent.slot, day_of_week: null, meal_name: intent.mealName, mood: null, strength: 1 })
+        .then((pref) => setVoterPreferences((prev) => [...prev, pref]))
+        .catch((e) => { console.error('Add preference failed:', e); alert('Could not save preference.') })
+      return `Noted — ${voter.name} ${intent.slot ? `for ${intent.slot.toLowerCase()}` : 'anytime'} likes ${intent.mealName}.`
+    }
     return intent.kind === 'unknown' ? intent.reply : 'Done.'
   }
 
   const submitChat = (raw?: string) => {
     const text = (typeof raw === 'string' ? raw : chatInput).trim()
     if (!text) return
-    const intent = parseCommand(text)
+    // B7: pass voter names so the parser can emit preference-record
+    // when the user addresses a specific family member.
+    const intent = parseCommand(text, voters.map((v) => v.name))
     const reply = applyIntent(intent)
     setChat((c) => [...c, { from: 'user', text, intent }, { from: 'bot', text: reply }])
     setChatInput('')
@@ -1061,19 +1101,31 @@ function App() {
     setListening(false)
   }
 
-  const addVoterClick = async () => {
-    const name = newVoterName.trim()
-    if (!name || !household) return
+  // B6 fix: one voter add/remove handler used by both the Today vote
+  // panel and the Family tab. The previous Today-tab path only updated
+  // setVoterIndex, so newly-added voters were invisible to the Family
+  // tab until next refresh. Now both states stay in sync.
+  const addVoterHandler = async (name: string): Promise<api.Voter | null> => {
+    if (!name.trim() || !household) return null
     const code = generateCode()
     try {
       const v = await api.addVoterRow(household.id, name, code)
       setVoterIndex((idx) => ({ ...idx, [v.name]: v.id }))
-      setNewVoterName('')
-    } catch (e) { console.error('Add voter failed:', e) }
+      setVoters((prev) => (prev.some((x) => x.id === v.id) ? prev : [...prev, v]))
+      return v
+    } catch (e) {
+      console.error('Add voter failed:', e)
+      alert('Could not add member. Try again.')
+      return null
+    }
   }
-
-  const removeVoter = async (id: string) => {
-    try { await api.removeVoterRow(id) } catch (e) { console.error(e) }
+  const removeVoterHandler = async (id: string): Promise<void> => {
+    try { await api.removeVoterRow(id) } catch (e) {
+      console.error('Remove voter failed:', e)
+      alert('Could not remove member. Try again.')
+      return
+    }
+    setVoters((prev) => prev.filter((v) => v.id !== id))
     setVoterIndex((idx) => {
       const copy = { ...idx }
       Object.keys(copy).forEach((k) => { if (copy[k] === id) delete copy[k] })
@@ -1081,6 +1133,12 @@ function App() {
     })
     setVotesToday((m) => { const c = { ...m }; delete c[id]; return c })
   }
+
+  const addVoterClick = async () => {
+    const v = await addVoterHandler(newVoterName)
+    if (v) setNewVoterName('')
+  }
+  const removeVoter = removeVoterHandler
 
   const castVoteFor = async (voterId: string, mealId: string) => {
     if (!household) return
@@ -1127,7 +1185,7 @@ function App() {
       } finally { setJoinBusy(false) }
     }}
   />
-  if (!household) return <KitchenOnboarding session={session} onComplete={(hh) => { setHousehold(hh); setTab('today') }} />
+  if (!household || forceOnboarding) return <KitchenOnboarding session={session} forceOnboarding={forceOnboarding} onComplete={(hh) => { setHousehold(hh); setForceOnboarding(false); setTab('today') }} />
 
   const voterList = Object.entries(voterIndex).map(([name, id]) => ({ name, id, code: id.slice(0, 5).toUpperCase() }))
 
@@ -1379,25 +1437,13 @@ function App() {
         preferences={preferences}
         voterPreferences={voterPreferences}
         busy={false}
-        onAddVoter={async (name) => {
-          try {
-            const v = await api.addVoterRow(household.id, name, generateCode())
-            setVoters((prev) => [...prev, v])
-            setVoterIndex((prev) => ({ ...prev, [v.name]: v.id }))
-          } catch (e) { console.error(e); alert('Could not add member.') }
+        onAddVoter={async (name: string) => {
+          // B6: use the consolidated handler so setVoters + setVoterIndex
+          // stay in sync. Returns the new voter (or null on failure).
+          await addVoterHandler(name)
         }}
         onRemoveVoter={async (id) => {
-          try {
-            await api.removeVoterRow(id)
-            setVoters((prev) => prev.filter((v) => v.id !== id))
-            setVoterIndex((prev) => {
-              const next: Record<string, string> = {}
-              for (const k of Object.keys(prev)) {
-                if (prev[k] !== id) next[k] = prev[k]
-              }
-              return next
-            })
-          } catch (e) { console.error(e); alert('Could not remove member.') }
+          await removeVoterHandler(id)
         }}
         onAddPreference={async (voterId, slot, mealName) => {
           try {
@@ -1423,17 +1469,50 @@ function App() {
           <label className="setting-row toggle-row"><span><b>Pure vegetarian household</b><small>Never suggest eggs or meat</small></span><input type="checkbox" checked={preferences.vegetarian} onChange={(e) => setPreferences({ ...preferences, vegetarian: e.target.checked })} /></label>
           <label className="setting-row toggle-row"><span><b>Family voting</b><small>Let everyone pick a meal — transparent tally</small></span><input type="checkbox" checked={voting.enabled} onChange={(e) => setVoting((v) => ({ ...v, enabled: e.target.checked }))} /></label>
           {preferences.dislikes.length > 0 && <div className="setting-row"><span><b>Never suggest</b><small>Set by you or the assistant</small></span><div className="dislike-tags">{preferences.dislikes.map((d, i) => <span className="tag" key={`${d.name}-${i}`}>{d.name}{d.slot && <em className="dislike-slot-pill"> · {d.slot.toLowerCase()}</em>}<button onClick={() => setPreferences((p) => ({ ...p, dislikes: p.dislikes.filter((_, j) => j !== i) }))} aria-label={`Remove ${d.name}`}><X size={12} /></button></span>)}</div></div>}
-          <button className="reset-button" onClick={resetData}><RotateCcw size={17} /> Reset to demo data</button>
-          <button className="reset-button" style={{ marginLeft: 8 }} onClick={() => {
-            // Force the onboarding wizard to re-show. The wizard itself
-            // detects the existing household and re-seeds inventory from
-            // scratch (it bulk-deletes first, so this is destructive — the
-            // user has to confirm). Useful for existing users who want
-            // to switch from the old hardcoded English seed to the new
-            // Indian kitchen template.
-            if (!window.confirm('Re-run pantry setup? Your current kitchen items will be replaced. Continue?')) return
-            setHousehold(null)
+          <button className="reset-button" onClick={resetData}><RotateCcw size={17} /> Reset local cache</button>
+          <button className="reset-button" style={{ marginLeft: 8 }} onClick={async () => {
+            // B5 fix: re-run pantry setup actually re-opens the wizard.
+            // We use a separate forceOnboarding flag (not nulling
+            // household) so the bootstrap tick doesn't immediately
+            // overwrite it with the existing row from Supabase.
+            if (!window.confirm('Re-run pantry setup? Your current kitchen items will be replaced. Saved dishes, votes, and meal history will be cleared so the new kitchen starts fresh. Continue?')) return
+            if (household) {
+              try { await api.resetHouseholdData(household.id) } catch (e) { console.error('Pre-reset wipe failed:', e) }
+            }
+            setInventory([])
+            setVoters([])
+            setVoterIndex({})
+            setVotesToday({})
+            setUserMeals([])
+            setDishOverrides([])
+            setMealHistory([])
+            setMealPlansByDate({})
+            setVoterPreferences([])
+            setForceOnboarding(true)
           }}><Sparkles size={17} /> Re-run pantry setup</button>
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #eee7dc' }}>
+            <p style={{ margin: '0 0 8px', color: 'var(--muted)', fontSize: 12, lineHeight: 1.5 }}>
+              <b style={{ color: 'var(--red)' }}>Destructive.</b> Delete all kitchen data, voters, votes, meal history, recipes, and curated-dish edits on the server. The household row stays so you stay signed in.
+            </p>
+            <button className="reset-button danger" onClick={async () => {
+              if (!household) return
+              const typed = window.prompt('Type DELETE to confirm. This wipes everything server-side for your household.', '')
+              if (typed !== 'DELETE') return
+              try {
+                await api.resetHouseholdData(household.id)
+                setInventory([])
+                setVoters([])
+                setVoterIndex({})
+                setVotesToday({})
+                setUserMeals([])
+                setDishOverrides([])
+                setMealHistory([])
+                setMealPlansByDate({})
+                setVoterPreferences([])
+                alert('Wiped. Reload to see a clean state, or use Re-run pantry setup to start over.')
+              } catch (e) { console.error(e); alert('Could not wipe. Try again.') }
+            }}><Trash2 size={17} /> Delete all my data</button>
+          </div>
         </div>
       </section>}
 

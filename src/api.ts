@@ -377,6 +377,19 @@ export const deleteUserMeal = async (id: string) => {
 }
 
 // ============================================================================
+// Reset household data — atomic wipe of operational rows, household kept
+// ============================================================================
+
+// Calls the reset_household_data(uuid) Postgres function. Returns the
+// function's error if the caller isn't the household owner (RPC throws
+// 42501 — surfaced via the .rpc() promise). The household row itself
+// is preserved, so the user stays signed in and can re-onboard.
+export const resetHouseholdData = async (householdId: string): Promise<void> => {
+  const { error } = await supabase.rpc('reset_household_data', { p_household_id: householdId })
+  if (error) throw error
+}
+
+// ============================================================================
 // Per-household overrides for curated DISHES (hide / edit)
 // ============================================================================
 

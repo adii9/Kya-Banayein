@@ -541,6 +541,9 @@ header .brand small { color: var(--muted); }
 .veg-toggle-knob { position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: white; box-shadow: 0 2px 5px rgba(0,0,0,.2); transition: transform .2s; }
 .veg-toggle.on .veg-toggle-knob { transform: translateX(22px); }
 
+.reset-button.danger { color: var(--red); border-color: rgba(193, 39, 45, .3); }
+.reset-button.danger:hover { background: rgba(193, 39, 45, .1); border-color: var(--red); }
+
 /* =========================================================================
    Recipes CTA — shown on Today when no user meals exist
    ========================================================================= */
