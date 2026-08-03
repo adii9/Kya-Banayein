@@ -213,10 +213,36 @@ export function recommendMeals(
   })
 }
 
+// Match ingredients by name (id-based matching broke when inventory uses
+// UUIDs from Supabase and dish recipes use string ids like 'atta' /
+// 'rice'). Two-way substring match handles both directions:
+//   - inventory 'Atta' contains dish id 'atta' (lowercased)
+//   - dish id 'rice' is contained in inventory 'Basmati Rice' (lowercased)
 export function confirmMeal(inventory: InventoryItem[], uses: IngredientUse[]): InventoryItem[] {
-  const used = new Map<string, number>()
-  uses.forEach((use) => used.set(use.ingredientId, (used.get(use.ingredientId) ?? 0) + use.quantity))
-  return inventory.map((item) => ({ ...item, quantity: Math.max(0, item.quantity - (used.get(item.id) ?? 0)) }))
+  // For each dish ingredient id, find all inventory rows whose name
+  // matches the id (lowercased substring in either direction). Sum the
+  // deductions across all matches — same dish id may map to multiple
+  // inventory variants the user has added (e.g. 'rice' might match
+  // 'Basmati Rice' and 'Sona Masoori Rice').
+  const usedByName = new Map<string, number>()
+  uses.forEach((use) => {
+    const key = use.ingredientId.toLowerCase().trim()
+    let remaining = use.quantity
+    for (const item of inventory) {
+      if (remaining <= 0) break
+      const name = item.name.toLowerCase().trim()
+      if (!name) continue
+      if (name.includes(key) || key.includes(name)) {
+        const take = Math.min(remaining, item.quantity)
+        if (take <= 0) continue
+        usedByName.set(item.id, (usedByName.get(item.id) ?? 0) + take)
+        remaining -= take
+      }
+    }
+  })
+  return inventory.map((item) => {
+    return { ...item, quantity: Math.max(0, item.quantity - (usedByName.get(item.id) ?? 0)) }
+  })
 }
 
 export function getOrderSuggestions(inventory: InventoryItem[]) {

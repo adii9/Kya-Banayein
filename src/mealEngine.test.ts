@@ -154,6 +154,25 @@ describe('confirmMeal', () => {
     expect(updated.find((item) => item.id === 'atta')?.quantity).toBe(350)
     expect(updated.find((item) => item.id === 'bhindi')?.quantity).toBe(0)
   })
+
+  it('matches by name when inventory uses UUIDs (post-fix behaviour)', () => {
+    // After onboarding, user inventory rows from Supabase have UUIDs as id
+    // while dish recipes still use string ids like 'atta'. Matching has to
+    // be by name, not by id. The previous id-based match left quantities
+    // untouched — see issue #7.
+    const inventory: InventoryItem[] = [
+      { id: 'c3bb6ca9-bd01-439f-8fe1-5e1965302e69', name: 'Atta', quantity: 500, unit: 'g', category: 'monthly', reorderAt: 300, targetStock: 3000 },
+      { id: '9b046224-b453-49bc-b509-9c9973f7cecf', name: 'Basmati Rice', quantity: 2200, unit: 'g', category: 'monthly', reorderAt: 1000, targetStock: 5000 },
+    ]
+
+    const updated = confirmMeal(inventory, [
+      { ingredientId: 'atta', quantity: 200 },
+      { ingredientId: 'rice', quantity: 500 },
+    ])
+
+    expect(updated.find((i) => i.name === 'Atta')?.quantity).toBe(300)
+    expect(updated.find((i) => i.name === 'Basmati Rice')?.quantity).toBe(1700)
+  })
 })
 
 describe('getOrderSuggestions', () => {
