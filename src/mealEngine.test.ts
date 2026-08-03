@@ -39,6 +39,46 @@ describe('recommendMeals', () => {
     expect(meals.flatMap((m) => m.dishes).some((d) => d.id === 'egg-bhurji')).toBe(true)
   })
 
+  it('gives genuinely different suggestions for breakfast vs dinner', () => {
+    // The bug report: tapping Breakfast / Lunch / Dinner yielded the
+    // same dish combinations. With slot-tagged DISHES, breakfast
+    // should pull Poha/Upma/Idli/Besan Chilla etc., never Chicken.
+    const breakfast = recommendMeals({ suggestionCount: 6, dishesPerMeal: 3, vegetarian: false }, [], [], {}, 'BREAKFAST')
+    const dinner = recommendMeals({ suggestionCount: 6, dishesPerMeal: 3, vegetarian: false }, [], [], {}, 'DINNER')
+    const breakfastIds = new Set(breakfast.flatMap((m) => m.dishes).map((d) => d.id))
+    const dinnerIds = new Set(dinner.flatMap((m) => m.dishes).map((d) => d.id))
+    // Chicken-curry is lunch/dinner only — must NOT appear in breakfast
+    expect(breakfastIds.has('chicken-curry')).toBe(false)
+    // Poha is breakfast/snacks only — must NOT appear in dinner
+    expect(dinnerIds.has('poha')).toBe(false)
+    // And the two pools should overlap on shared items (roti, paratha)
+    // but each have items the other doesn't.
+    expect(breakfastIds.has('paratha')).toBe(true)
+    expect(dinnerIds.has('paratha')).toBe(true)
+    // At least one breakfast-only item
+    expect(breakfastIds.has('poha') || breakfastIds.has('upma') || breakfastIds.has('idli')).toBe(true)
+    // At least one dinner-only item
+    expect(dinnerIds.has('rajma') || dinnerIds.has('chicken-curry') || dinnerIds.has('paneer')).toBe(true)
+  })
+
+  it('meal IDs are slot-prefixed so votes and plans don\'t collide across slots', () => {
+    const breakfast = recommendMeals({ suggestionCount: 3, dishesPerMeal: 2, vegetarian: true }, [], [], {}, 'BREAKFAST')
+    const dinner = recommendMeals({ suggestionCount: 3, dishesPerMeal: 2, vegetarian: true }, [], [], {}, 'DINNER')
+    expect(breakfast[0].id).toMatch(/^BREAKFAST-meal-/)
+    expect(dinner[0].id).toMatch(/^DINNER-meal-/)
+    expect(breakfast[0].id).not.toBe(dinner[0].id)
+  })
+
+  it('falls back to the full pool when no slot-tagged dish matches (empty kitchen edge case)', () => {
+    // Empty kitchen + breakfast → no dish has stock, but the engine
+    // still returns a result so the screen isn't blank. The first
+    // suggestion may repeat (since rank has 1 item) but the title
+    // should still be valid.
+    const meals = recommendMeals({ suggestionCount: 3, dishesPerMeal: 2, vegetarian: true }, [], [], {}, 'BREAKFAST')
+    expect(meals.length).toBe(3)
+    expect(meals[0].title.length).toBeGreaterThan(0)
+  })
+
   it('replaces curated fields with the household override', () => {
     const overrides = buildDishOverrideMap([
       { dish_id: 'egg-bhurji', hidden: false, override: { name: 'Anda Bhurji (light)', time: 12 } },

@@ -951,7 +951,13 @@ function App() {
     return () => clearTimeout(t)
   }, [preferences.familyName, preferences.members, preferences.vegetarian, voting.enabled, preferences.dislikes, household])
 
-  const mealOptions = useMemo(() => recommendMeals(preferences, inventory, userMealsToDishes(userMeals), buildDishOverrideMap(dishOverrides)), [preferences, inventory, userMeals, dishOverrides])
+  // Per-slot recommendations: tapping Breakfast / Lunch / Dinner now
+  // yields genuinely different suggestions because recommendMeals
+  // filters the dish pool by slot tag.
+  const mealOptions = useMemo(
+    () => recommendMeals(preferences, inventory, userMealsToDishes(userMeals), buildDishOverrideMap(dishOverrides), selectedSlot),
+    [preferences, inventory, userMeals, dishOverrides, selectedSlot]
+  )
   const orders = useMemo(() => getOrderSuggestions(inventory), [inventory])
   const lowStock = orders.weekly.length + orders.monthly.length
   const voteResult: PollResult = useMemo(() => {
@@ -1097,7 +1103,7 @@ function App() {
       // can match user-authored recipes and respect per-household
       // curated-dish edits. The old call dropped both, so "dinner
       // should be Maggi" failed to find a user-authored recipe.
-      const recs = recommendMeals({ suggestionCount: 6, dishesPerMeal: 4, vegetarian: preferences.vegetarian }, inventory, userMealsToDishes(userMeals), buildDishOverrideMap(dishOverrides))
+      const recs = recommendMeals({ suggestionCount: 6, dishesPerMeal: 4, vegetarian: preferences.vegetarian }, inventory, userMealsToDishes(userMeals), buildDishOverrideMap(dishOverrides), intent.slot)
       const matchMeal = recs.find((m) => m.dishes.some((d) => d.name.toLowerCase().includes(lc))) ?? recs[0]
       if (!matchMeal) return `Couldn't build a meal with ${intent.dishName}. Try a different dish name.`
       const matchedDish = matchMeal.dishes.find((d) => d.name.toLowerCase().includes(lc)) ?? matchMeal.dishes[0]
