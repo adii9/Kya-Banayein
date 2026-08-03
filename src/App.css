@@ -119,7 +119,7 @@ h1 { font-family: 'DM Serif Display', serif; font-size: clamp(42px, 6vw, 68px); 
 .bottom-nav span { font-size: 9px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .bottom-nav button.active { background: #fff8eb; color: var(--red); }
 .icon-wrap { position: relative; }
-.icon-wrap i { position: absolute; top: -5px; right: -8px; background: var(--red); color: white; border: 2px solid var(--ink); min-width: 16px; height: 16px; border-radius: 8px; font-style: normal; font-size: 8px; display: grid; place-items: center; }
+.icon-wrap i { position: absolute; top: -2px; right: -2px; background: var(--red); color: white; border: 1.5px solid var(--paper); min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; font-style: normal; font-size: 9px; font-weight: 700; display: grid; place-items: center; line-height: 1; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
 
 @media (max-width: 920px) {
   main { width: min(100% - 32px, 720px); }
