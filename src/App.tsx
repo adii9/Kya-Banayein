@@ -264,7 +264,7 @@ function OrderListEditor({ title, subtitle, baseItems, slot, householdId, custom
     <div className="order-head"><div><h2>{title}</h2><p>{subtitle}</p></div><span>{items.length}</span></div>
     {items.length === 0 ? <div className="empty-state"><Check size={22} />{empty}</div>
       : <ul>{items.map((item) => <li key={item.id}>
-          <label><input type="checkbox" checked /><span><b>{item.name}</b><small>Bring stock back to target</small></span></label>
+          <label><input type="checkbox" checked={!removed.has(item.id)} onChange={() => remove(item.id)} aria-label={`Toggle ${item.name} on this list`} /><span><b>{item.name}</b><small>Bring stock back to target</small></span></label>
           <strong>{item.quantity.toLocaleString()} {item.unit}</strong>
           {baseItems.find((b) => b.id === item.id) && <button className="remove-item" aria-label={`Remove ${item.name}`} disabled={busy} onClick={() => remove(item.id)}><X size={14} /></button>}
         </li>)}</ul>}
@@ -309,11 +309,12 @@ function SignIn() {
   </div>
 }
 
-function TutorialOverlay({ step, totalSteps, onNext, onSkip }: {
+function TutorialOverlay({ step, totalSteps, onNext, onSkip, onBack }: {
   step: number
   totalSteps: number
   onNext: () => void
   onSkip: () => void
+  onBack?: () => void
 }) {
   // Three steps. Each is a small "tip" card pinned to a corner of the
   // screen so the user can still see the UI behind it. The card has a
@@ -345,7 +346,7 @@ function TutorialOverlay({ step, totalSteps, onNext, onSkip }: {
       <h3>{t.title}</h3>
       <p>{t.body}</p>
       <div className="tutorial-actions">
-        {step > 0 && <button className="reset-button" onClick={() => { /* back handled by parent via onNext with step-1 */ }} aria-label="Back">← Back</button>}
+        {step > 0 && onBack && <button className="reset-button" onClick={onBack} aria-label="Back">← Back</button>}
         <button className="reset-button" onClick={onSkip}>Skip tour</button>
         <button className="primary" onClick={onNext}>{t.cta}</button>
       </div>
@@ -401,7 +402,7 @@ function JoinScreen({ code, household, onJoin, onCancel, busy }: {
 // or skip individual groups. Selected items are tracked in local state
 // during the wizard and bulk-saved at the end via api.bulkReplaceInventory.
 // =============================================================================
-function KitchenOnboarding({ session, onComplete, forceOnboarding }: { session: Session; onComplete: (household: api.Household) => void; forceOnboarding?: boolean }) {
+function KitchenOnboarding({ session, onComplete, forceOnboarding, currentSuggestionCount, currentDishesPerMeal }: { session: Session; onComplete: (household: api.Household) => void; forceOnboarding?: boolean; currentSuggestionCount: number; currentDishesPerMeal: number }) {
   // Wizard state.
   const [stepIdx, setStepIdx] = useState(0)
   const steps = useMemo(() => ['welcome', ...KITCHEN_GROUPS.map((g) => g.id), 'summary'] as const, [])
@@ -502,6 +503,8 @@ function KitchenOnboarding({ session, onComplete, forceOnboarding }: { session: 
             members,
             vegetarian,
             voting_enabled: voting,
+            suggestion_count: currentSuggestionCount,
+            dishes_per_meal: currentDishesPerMeal,
             onboarding_complete: true,
           })
         : await api.createHousehold(session.user.id, {
@@ -509,6 +512,8 @@ function KitchenOnboarding({ session, onComplete, forceOnboarding }: { session: 
             members,
             vegetarian,
             voting_enabled: voting,
+            suggestion_count: currentSuggestionCount,
+            dishes_per_meal: currentDishesPerMeal,
             onboarding_complete: true,
           })
       // Step 2: bulk-replace the inventory with the picked items (or
@@ -921,13 +926,27 @@ function App() {
           monthly: overrides.filter((o) => o.slot === 'monthly' && o.action === 'add').map((o) => ({ id: o.id, name: o.custom_name ?? '', quantity: o.custom_quantity ?? 0, unit: o.custom_unit ?? 'g' })),
         })
         setMealPlansByDate({ [istDateKey(new Date())]: plans })
+        // Restore any dish exclusions the user set on a previous session.
+        // The plan stores excluded dishes by name (excluded_dishes: string[]);
+        // match them against the seed DISHES list by lowercased name to
+        // populate the editor's exclusion set.
+        const excluded = new Set<string>()
+        for (const plan of plans) {
+          if (plan.excluded_dishes && plan.excluded_dishes.length > 0) {
+            const names = new Set(plan.excluded_dishes.map((n) => n.toLowerCase()))
+            for (const d of DISHES) {
+              if (names.has(d.name.toLowerCase())) excluded.add(d.id)
+            }
+          }
+        }
+        if (excluded.size > 0) setExcludedDishes(excluded)
         const idx: Record<string, string> = {}
         voters.forEach((v) => { idx[v.name] = v.id })
         setVoterIndex(idx)
         const vmap: Record<string, string> = {}
         votes.forEach((v) => { vmap[v.voter_id] = v.meal_id })
         setVotesToday(vmap)
-        setPreferences((p) => ({ ...p, familyName: hh.name, members: hh.members, vegetarian: hh.vegetarian, dislikes: hh.dislikes ?? p.dislikes }))
+        setPreferences((p) => ({ ...p, familyName: hh.name, members: hh.members, vegetarian: hh.vegetarian, suggestionCount: hh.suggestion_count ?? p.suggestionCount, dishesPerMeal: hh.dishes_per_meal ?? p.dishesPerMeal, dislikes: hh.dislikes ?? p.dislikes }))
         setVoting((v) => ({ ...v, enabled: hh.voting_enabled }))
       } catch (e) { console.error('Bootstrap failed:', e) }
     })()
@@ -941,15 +960,40 @@ function App() {
 
   useEffect(() => {
     if (!household) return
-    if (preferences.familyName === household.name && preferences.members === household.members && preferences.vegetarian === household.vegetarian && voting.enabled === household.voting_enabled && JSON.stringify(preferences.dislikes) === JSON.stringify(household.dislikes ?? [])) return
+    if (
+      preferences.familyName === household.name
+      && preferences.members === household.members
+      && preferences.vegetarian === household.vegetarian
+      && voting.enabled === household.voting_enabled
+      && preferences.suggestionCount === (household.suggestion_count ?? 3)
+      && preferences.dishesPerMeal === (household.dishes_per_meal ?? 3)
+      && JSON.stringify(preferences.dislikes) === JSON.stringify(household.dislikes ?? [])
+    ) return
     const t = setTimeout(async () => {
       try {
-        const updated = await api.updateHousehold(household.id, { name: preferences.familyName, members: preferences.members, vegetarian: preferences.vegetarian, voting_enabled: voting.enabled, dislikes: preferences.dislikes })
+        const updated = await api.updateHousehold(household.id, {
+          name: preferences.familyName,
+          members: preferences.members,
+          vegetarian: preferences.vegetarian,
+          voting_enabled: voting.enabled,
+          suggestion_count: preferences.suggestionCount,
+          dishes_per_meal: preferences.dishesPerMeal,
+          dislikes: preferences.dislikes,
+        })
         setHousehold(updated)
       } catch (e) { console.error('Household sync failed:', e) }
     }, 800)
     return () => clearTimeout(t)
-  }, [preferences.familyName, preferences.members, preferences.vegetarian, voting.enabled, preferences.dislikes, household])
+  }, [
+    preferences.familyName,
+    preferences.members,
+    preferences.vegetarian,
+    voting.enabled,
+    preferences.suggestionCount,
+    preferences.dishesPerMeal,
+    preferences.dislikes,
+    household,
+  ])
 
   // Per-slot recommendations: tapping Breakfast / Lunch / Dinner now
   // yields genuinely different suggestions because recommendMeals
@@ -973,7 +1017,7 @@ function App() {
     // Optimistically upsert the plan for the current slot so the slot chip
     // flips to 'Planned' immediately. The real upsert happens in confirm().
     if (household) {
-      api.upsertMealPlan(household.id, todayKey, selectedSlot, meal.id).then((plan) => {
+      api.upsertMealPlan(household.id, todayKey, selectedSlot, meal.id, []).then((plan) => {
         setMealPlansByDate((prev) => ({ ...prev, [todayKey]: [...(prev[todayKey] ?? []).filter((p) => p.slot !== selectedSlot), plan] }))
       }).catch((e) => console.error('Plan upsert failed:', e))
     }
@@ -997,12 +1041,21 @@ function App() {
       try {
         await Promise.all(next.map((i) => api.updateInventoryItem(i.id, i.quantity)))
         await api.recordMeal(household.id, selected.id, effectiveDishes)
-        // Mark the per-slot plan as confirmed.
-        await api.confirmMealPlan(household.id, todayKey, selectedSlot)
-        setMealPlansByDate((prev) => {
-          const existing = prev[todayKey] ?? []
-          return { ...prev, [todayKey]: existing.map((p) => p.slot === selectedSlot ? { ...p, confirmed_at: new Date().toISOString() } : p) }
-        })
+        // Persist the plan with the current excluded_dishes so the editor's
+        // toggles survive a refresh. Bump confirm timestamp too.
+        const planWithExclusions = await api.upsertMealPlan(
+          household.id, todayKey, selectedSlot, selected.id,
+          Array.from(excludedDishes).map((id) => {
+            const d = selected.dishes.find((x) => x.id === id)
+            return d?.name ?? id
+          }),
+        )
+        if (planWithExclusions) {
+          setMealPlansByDate((prev) => {
+            const existing = prev[todayKey] ?? []
+            return { ...prev, [todayKey]: existing.map((p) => p.slot === selectedSlot ? planWithExclusions : p) }
+          })
+        }
         // Refresh the history so the new meal shows up immediately.
         api.fetchMealHistory(household.id, 7).then(setMealHistory).catch(() => {})
       // B12 fix: surface failures from fire-and-forget post-confirm syncs so
@@ -1264,7 +1317,7 @@ function App() {
       } finally { setJoinBusy(false) }
     }}
   />
-  if (!household || forceOnboarding) return <KitchenOnboarding session={session} forceOnboarding={forceOnboarding} onComplete={(hh) => { setHousehold(hh); setForceOnboarding(false); setTab('today') }} />
+  if (!household || forceOnboarding) return <KitchenOnboarding session={session} forceOnboarding={forceOnboarding} currentSuggestionCount={preferences.suggestionCount} currentDishesPerMeal={preferences.dishesPerMeal} onComplete={(hh) => { setHousehold(hh); setForceOnboarding(false); setTab('today') }} />
 
   const voterList = Object.entries(voterIndex).map(([name, id]) => ({ name, id, code: id.slice(0, 5).toUpperCase() }))
 
@@ -1720,6 +1773,9 @@ function App() {
       onSkip={() => {
         localStorage.setItem('kya-tutorial-done', '1')
         setTutorialStep(null)
+      }}
+      onBack={() => {
+        if (tutorialStep > 0) setTutorialStep(tutorialStep - 1)
       }}
     />}
   </div>

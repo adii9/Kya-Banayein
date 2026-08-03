@@ -38,6 +38,8 @@ export type Household = {
   onboarding_complete: boolean
   join_code: string | null
   dislikes: Dislike[]  // JSONB column, always present (default '[]')
+  suggestion_count: number  // 1-12, from Migration 0010
+  dishes_per_meal: number    // 1-6, from Migration 0010
 }
 
 export type Voter = { id: string; name: string; invite_code: string }
@@ -179,6 +181,7 @@ export type MealPlan = {
   plan_date: string  // ISO date 'YYYY-MM-DD'
   slot: MealSlot
   meal_id: string | null
+  excluded_dishes: string[]  // dish names the user toggled off in the editor
   confirmed_at: string | null
   created_at: string
   updated_at: string
@@ -193,9 +196,22 @@ export const fetchMealPlansForDay = async (householdId: string, isoDate: string)
   return (data ?? []) as MealPlan[]
 }
 
-export const upsertMealPlan = async (householdId: string, isoDate: string, slot: MealSlot, mealId: string | null) => {
+export const upsertMealPlan = async (
+  householdId: string,
+  isoDate: string,
+  slot: MealSlot,
+  mealId: string | null,
+  excludedDishes: string[] = [],
+) => {
   const { data, error } = await table('meal_plans')
-    .upsert({ household_id: householdId, plan_date: isoDate, slot, meal_id: mealId, updated_at: new Date().toISOString() }, { onConflict: 'household_id,plan_date,slot' })
+    .upsert({
+      household_id: householdId,
+      plan_date: isoDate,
+      slot,
+      meal_id: mealId,
+      excluded_dishes: excludedDishes,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'household_id,plan_date,slot' })
     .select('*')
   if (error) throw error
   return data?.[0] as MealPlan
