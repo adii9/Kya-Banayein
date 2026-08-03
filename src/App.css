@@ -10,7 +10,8 @@
   --shadow: rgba(75, 55, 35, .04) 0 0 0 1px, rgba(75, 55, 35, .08) 0 5px 16px, rgba(75, 55, 35, .04) 0 16px 32px;
 }
 
-.app-shell { min-height: 100vh; padding-bottom: 104px; background: radial-gradient(circle at 70% 0%, rgba(181, 131, 70, .09), transparent 28%), var(--paper); }
+.app-shell { min-height: 100vh; padding-bottom: 120px; background: radial-gradient(circle at 70% 0%, rgba(181, 131, 70, .09), transparent 28%), var(--paper); }
+.app-shell { padding-bottom: max(120px, env(safe-area-inset-bottom, 0px) + 120px); }
 header { height: 80px; padding: 0 max(28px, calc((100vw - 1180px) / 2)); display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(82, 60, 39, .1); background: rgba(247,243,234,.88); backdrop-filter: blur(14px); position: sticky; top: 0; z-index: 20; }
 .brand { border: 0; background: transparent; display: flex; align-items: center; gap: 12px; cursor: pointer; text-align: left; padding: 0; }
 .brand-mark { width: 44px; height: 44px; border-radius: 14px; background: var(--red); color: white; display: grid; place-items: center; box-shadow: inset 0 0 0 1px rgba(255,255,255,.2); }
@@ -112,10 +113,10 @@ h1 { font-family: 'DM Serif Display', serif; font-size: clamp(42px, 6vw, 68px); 
 .toggle-row input:checked { background: var(--green); }
 .toggle-row input:checked:before { transform: translateX(21px); }
 .reset-button { margin: 18px 0 10px; height: 42px; border: 1px solid #e3cabe; background: #fff8f4; color: var(--red); padding: 0 15px; border-radius: 11px; display: flex; gap: 8px; align-items: center; cursor: pointer; }
-.bottom-nav { position: fixed; z-index: 30; bottom: 18px; left: 50%; transform: translateX(-50%); width: min(470px, calc(100% - 28px)); height: 68px; padding: 7px; background: rgba(42,35,30,.96); backdrop-filter: blur(16px); border-radius: 23px; box-shadow: 0 18px 45px rgba(36,24,16,.25); display: grid; grid-template-columns: repeat(4, 1fr); }
-.bottom-nav button { border: 0; background: transparent; color: #c7beb3; border-radius: 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; cursor: pointer; }
+.bottom-nav { position: fixed; z-index: 30; bottom: 18px; left: 50%; transform: translateX(-50%); width: min(560px, calc(100% - 28px)); height: 68px; padding: 7px; background: rgba(42,35,30,.96); backdrop-filter: blur(16px); border-radius: 23px; box-shadow: 0 18px 45px rgba(36,24,16,.25); display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; }
+.bottom-nav button { border: 0; background: transparent; color: #c7beb3; border-radius: 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; cursor: pointer; min-width: 0; padding: 0 2px; }
 .bottom-nav svg { width: 20px; height: 20px; }
-.bottom-nav span { font-size: 9px; font-weight: 600; }
+.bottom-nav span { font-size: 9px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .bottom-nav button.active { background: #fff8eb; color: var(--red); }
 .icon-wrap { position: relative; }
 .icon-wrap i { position: absolute; top: -5px; right: -8px; background: var(--red); color: white; border: 2px solid var(--ink); min-width: 16px; height: 16px; border-radius: 8px; font-style: normal; font-size: 8px; display: grid; place-items: center; }
@@ -154,6 +155,35 @@ h1 { font-family: 'DM Serif Display', serif; font-size: clamp(42px, 6vw, 68px); 
   .text-field input { width: 100%; }
   .setting-row { min-height: 78px; }
   .bottom-nav { bottom: 10px; }
+}
+/* Narrow-phone polish (≤480px — iPhone SE, iPhone 14, etc.). Header
+   collapses further; bottom-nav shrinks to fit. */
+@media (max-width: 480px) {
+  header { padding: 0 12px; gap: 8px; }
+  header .brand b { font-size: 16px; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Sign-out pill is hidden on narrow phones — accessible from
+     Settings (Family tab has the member list; Rules tab doesn't
+     have it yet, so we keep the pill visible at >=620px and ≥481px).
+     Until a sign-out button lands in Rules, we surface it via
+     tapping the brand pill to open the household page, where a
+     full sign-out row will live. For now: keep it, just shrink it. */
+  .signout-pill { width: 34px; height: 34px; }
+  .family-pill { width: 38px; height: 38px; }
+  /* Bottom nav: shrink icons + label so 6 items fit on a 360px viewport. */
+  .bottom-nav { width: calc(100% - 20px); height: 60px; padding: 5px; border-radius: 20px; bottom: 8px; }
+  .bottom-nav svg { width: 18px; height: 18px; }
+  .bottom-nav span { font-size: 8px; letter-spacing: -0.2px; }
+  .bottom-nav button { gap: 2px; border-radius: 13px; padding: 0 1px; }
+  /* Hero copy: tighter padding, smaller headline */
+  .hero-copy { padding: 22px 0 14px; gap: 14px; }
+  h1, .page-heading h1 { font-size: 36px; line-height: 1.1; }
+  /* Slot selector buttons: smaller chips */
+  .slot-selector { gap: 6px; }
+  .slot-selector button { padding: 8px 12px; font-size: 12px; }
+  /* Confirmation bar above the shorter nav */
+  .confirmation-bar { bottom: 80px; }
+  /* Chat FAB sits above the nav */
+  .chat-fab { bottom: 84px; right: 16px; width: 50px; height: 50px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 .chat-fab { position: fixed; right: 22px; bottom: 100px; width: 56px; height: 56px; border: 0; border-radius: 50%; background: var(--ink); color: white; box-shadow: 0 14px 32px rgba(0,0,0,.25); display: grid; place-items: center; cursor: pointer; z-index: 25; }
