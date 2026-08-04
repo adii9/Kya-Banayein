@@ -393,6 +393,56 @@ export const deleteUserMeal = async (id: string) => {
 }
 
 // ============================================================================
+// Phase E: composed meals (multiple dishes in one recommended meal).
+// One row in `household_meals` = one composed meal. Each composed meal
+// has 1..n dishes. The client renders the meals alongside the curated
+// and single-dish user_meals in the Today tab.
+// ============================================================================
+
+export type HouseholdMeal = {
+  id: string
+  household_id: string
+  name: string                  // meal title (e.g. "Cucumber + Salad + Anda Bhurji + Roti")
+  description: string           // subtitle
+  slot: 'BREAKFAST' | 'LUNCH' | 'DINNER' | null
+  dishes: { id: string; name: string }[]   // 1..n dishes, by seed id (or custom UUID)
+  match_count: number           // 0..100, set by the App before save
+  created_at: string
+  updated_at: string
+}
+
+export const fetchHouseholdMeals = async (householdId: string): Promise<HouseholdMeal[]> => {
+  const { data, error } = await table('household_meals')
+    .select('*')
+    .eq('household_id', householdId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return (data ?? []) as HouseholdMeal[]
+}
+
+export const addHouseholdMeal = async (householdId: string, meal: Omit<HouseholdMeal, 'id' | 'household_id' | 'created_at' | 'updated_at'>): Promise<HouseholdMeal> => {
+  const row = { household_id: householdId, ...meal }
+  const { data, error } = await table('household_meals').insert(row).select('*').single()
+  if (error) throw error
+  return data as HouseholdMeal
+}
+
+export const updateHouseholdMeal = async (id: string, patch: Partial<Omit<HouseholdMeal, 'id' | 'household_id' | 'created_at'>>): Promise<HouseholdMeal> => {
+  const { data, error } = await table('household_meals')
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select('*')
+    .single()
+  if (error) throw error
+  return data as HouseholdMeal
+}
+
+export const deleteHouseholdMeal = async (id: string) => {
+  const { error } = await table('household_meals').delete().eq('id', id)
+  if (error) throw error
+}
+
+// ============================================================================
 // Reset household data — atomic wipe of operational rows, household kept
 // ============================================================================
 

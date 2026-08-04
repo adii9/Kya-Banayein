@@ -42,6 +42,8 @@ h1 { font-family: 'DM Serif Display', serif; font-size: clamp(42px, 6vw, 68px); 
 .food-shape { width: 91px; height: 91px; border-radius: 45% 55% 52% 48%; background: radial-gradient(circle at 35% 30%, #f3c85c 0 7%, transparent 8%), radial-gradient(circle at 62% 65%, #6f883d 0 8%, transparent 9%), radial-gradient(circle at 40% 50%, color-mix(in srgb, var(--meal-color) 60%, #e1ad3d), var(--meal-color)); box-shadow: inset 0 0 20px rgba(75,35,10,.18); }
 .garnish { position: absolute; color: #fff6d4; font-size: 20px; }
 .match-badge { position: absolute; right: 14px; bottom: 14px; background: rgba(255,253,248,.94); color: var(--green); padding: 7px 10px; border-radius: 15px; font-size: 10px; font-weight: 700; display: flex; align-items: center; gap: 4px; }
+.custom-badge { position: absolute; left: 14px; bottom: 14px; background: rgba(193, 39, 45, .92); color: #fff8eb; padding: 7px 10px; border-radius: 15px; font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }
+.meal-card.custom { border-color: rgba(193, 39, 45, .35); box-shadow: 0 0 0 1px rgba(193, 39, 45, .12), var(--shadow); }
 .meal-body { padding: 20px; }
 .meal-meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
 .meal-meta span { display: flex; align-items: center; gap: 5px; }
@@ -507,12 +509,18 @@ header .brand small { color: var(--muted); }
 .recipes-tab.active { background: white; color: var(--ink); box-shadow: 0 1px 4px rgba(0,0,0,.06); }
 .recipes-tab.active em { background: var(--orange); color: white; }
 
+/* Composed-meals tab uses a slightly different badge colour so the
+   user can tell their authored multi-dish meals apart from the
+   single-recipe "Your recipes" tab. */
+.recipes-tab[aria-selected="true"]:nth-of-type(2) em { background: var(--red); }
+
 .curated-hint { color: var(--muted); font-size: 12px; line-height: 1.55; padding: 10px 14px; background: rgba(220,165,49,.06); border: 1px dashed rgba(220,165,49,.3); border-radius: 10px; margin: 0 0 16px; }
 
 .recipes-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 .recipe-card { background: var(--card); border: 1px solid #e8e0d1; border-radius: 18px; overflow: hidden; box-shadow: var(--shadow); display: flex; flex-direction: column; }
 .recipe-card.curated.edited { border-color: rgba(220,165,49,.4); box-shadow: 0 0 0 1px rgba(220,165,49,.15), var(--shadow); }
 .recipe-card.curated.hidden { opacity: .55; }
+.recipe-card.composed { border-color: rgba(193, 39, 45, .25); box-shadow: 0 0 0 1px rgba(193, 39, 45, .08), var(--shadow); }
 .recipe-card.curated.hidden .recipe-art { filter: grayscale(.6); }
 .recipe-overlay-tag { position: absolute; top: 10px; right: 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .8px; padding: 4px 9px; border-radius: 100px; background: rgba(0,0,0,.55); color: white; }
 .recipe-overlay-tag.alt { background: var(--orange); }
@@ -588,3 +596,24 @@ header .brand small { color: var(--muted); }
 /* Onboarding footnote — small "and there's also Recipes" callout */
 .onboarding-footnote { color: var(--muted); font-size: 12px; line-height: 1.55; padding: 12px 14px; background: rgba(220,165,49,.06); border-radius: 10px; margin: 0 0 18px; border: 1px dashed rgba(220,165,49,.25); }
 .onboarding-footnote b { color: var(--ink); }
+
+/* =========================================================================
+   Composed-meal editor (Recipes tab → Composed meals → New)
+   ========================================================================= */
+.composed-dishes { background: rgba(255,253,248,.6); border: 1px solid #e8e0d1; border-radius: 14px; padding: 14px; margin-top: 6px; }
+.composed-dishes-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+.composed-dishes-head small { color: var(--muted); font-size: 11px; }
+.composed-dishes-group { margin-bottom: 12px; }
+.composed-dishes-group:last-child { margin-bottom: 0; }
+.composed-dishes-group h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); font-weight: 700; }
+.composed-dishes-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+.composed-dish { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--card); border: 1px solid #e8e0d1; border-radius: 10px; cursor: pointer; text-align: left; transition: border-color .15s, background .15s, transform .1s; font: inherit; color: inherit; }
+.composed-dish:hover { border-color: rgba(220,165,49,.5); }
+.composed-dish.picked { border-color: var(--red); background: rgba(193, 39, 45, .04); }
+.composed-dish-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.composed-dish-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.composed-dish-body b { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composed-dish-body small { font-size: 11px; color: var(--muted); }
+.composed-dish-check { color: var(--red); flex-shrink: 0; }
+.composed-dishes-summary { margin-top: 12px; padding: 10px 12px; background: rgba(220,165,49,.06); border-radius: 10px; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.composed-dishes-summary small { color: var(--muted); font-size: 11px; text-align: right; }

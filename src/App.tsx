@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { Check, ChevronRight, Clock3, Eye, EyeOff, Leaf, LogOut, MessageCircle, Mic, MicOff, Minus, Package, Plus, RotateCcw, Send, Settings2, Share2, ShoppingBasket, Sparkles, Trash2, Users, UtensilsCrossed, Volume2, Vote, X } from 'lucide-react'
+import { Check, ChevronRight, Clock3, Eye, EyeOff, Layers, Leaf, LogOut, MessageCircle, Mic, MicOff, Minus, Package, Plus, RotateCcw, Send, Settings2, Share2, ShoppingBasket, Sparkles, Trash2, Users, UtensilsCrossed, Volume2, Vote, X } from 'lucide-react'
 import './App.css'
 import { buildDishOverrideMap, confirmMeal, DEFAULT_INVENTORY, DISHES, getOrderSuggestions, recommendMeals, type Dish, type InventoryItem, type MealOption, type UserDish } from './mealEngine'
 import { parseCommand, SUPPORTED_LANGS, type ChatIntent } from './chatBot'
@@ -823,6 +823,10 @@ function App() {
   // User-authored meals: persisted in Supabase and merged into the Today
   // pool. Defaults to [] when not signed in (e.g., on the join screen).
   const [userMeals, setUserMeals] = useState<api.UserMeal[]>([])
+  // Phase E: composed meals (multiple dishes bundled by the user as one
+  // meal option). Hydrated on bootstrap, persisted in Supabase, cleared
+  // by resetHouseholdData on the server side.
+  const [householdMeals, setHouseholdMeals] = useState<api.HouseholdMeal[]>([])
   // Per-household overrides for the curated DISHES list (hide + edit).
   // Empty map means "use the curated DISHES as-is". Hydrated on bootstrap.
   const [dishOverrides, setDishOverrides] = useState<api.DishOverrideRow[]>([])
@@ -903,7 +907,7 @@ function App() {
         if (!hh.join_code) {
           api.generateAndSetJoinCode(hh).then((updated) => setHousehold(updated)).catch((e) => console.warn('Could not generate join code', e))
         }
-        const [inv, voters, votes, history, overrides, plans, voterPrefs, um, dishOv] = await Promise.all([
+        const [inv, voters, votes, history, overrides, plans, voterPrefs, um, dishOv, hm] = await Promise.all([
           api.fetchInventory(hh.id),
           api.fetchVoters(hh.id),
           api.fetchVotesToday(hh.id),
@@ -913,6 +917,7 @@ function App() {
           api.fetchHouseholdPreferences(hh.id),
           api.fetchUserMeals(hh.id),
           api.fetchDishOverrides(hh.id),
+          api.fetchHouseholdMeals(hh.id),
         ])
         if (cancelled) return
         setInventory(inv)
@@ -921,6 +926,7 @@ function App() {
         setVoters(voters)
         setUserMeals(um)
         setDishOverrides(dishOv)
+        setHouseholdMeals(hm)
         setCustomOrderItems({
           weekly: overrides.filter((o) => o.slot === 'weekly' && o.action === 'add').map((o) => ({ id: o.id, name: o.custom_name ?? '', quantity: o.custom_quantity ?? 0, unit: o.custom_unit ?? 'g' })),
           monthly: overrides.filter((o) => o.slot === 'monthly' && o.action === 'add').map((o) => ({ id: o.id, name: o.custom_name ?? '', quantity: o.custom_quantity ?? 0, unit: o.custom_unit ?? 'g' })),
@@ -997,10 +1003,12 @@ function App() {
 
   // Per-slot recommendations: tapping Breakfast / Lunch / Dinner now
   // yields genuinely different suggestions because recommendMeals
-  // filters the dish pool by slot tag.
+  // filters the dish pool by slot tag. Phase E composed meals are
+  // threaded as the 6th positional arg so the user's own multi-dish
+  // meals surface alongside the auto-bundled options.
   const mealOptions = useMemo(
-    () => recommendMeals(preferences, inventory, userMealsToDishes(userMeals), buildDishOverrideMap(dishOverrides), selectedSlot),
-    [preferences, inventory, userMeals, dishOverrides, selectedSlot]
+    () => recommendMeals(preferences, inventory, userMealsToDishes(userMeals), buildDishOverrideMap(dishOverrides), selectedSlot, householdMeals),
+    [preferences, inventory, userMeals, dishOverrides, selectedSlot, householdMeals]
   )
   const orders = useMemo(() => getOrderSuggestions(inventory), [inventory])
   const lowStock = orders.weekly.length + orders.monthly.length
@@ -1156,7 +1164,9 @@ function App() {
       // can match user-authored recipes and respect per-household
       // curated-dish edits. The old call dropped both, so "dinner
       // should be Maggi" failed to find a user-authored recipe.
-      const recs = recommendMeals({ suggestionCount: 6, dishesPerMeal: 4, vegetarian: preferences.vegetarian }, inventory, userMealsToDishes(userMeals), buildDishOverrideMap(dishOverrides), intent.slot)
+      // Phase E: pass householdMeals as the 6th arg so chat suggestions
+      // also surface the user's composed meals.
+      const recs = recommendMeals({ suggestionCount: 6, dishesPerMeal: 4, vegetarian: preferences.vegetarian }, inventory, userMealsToDishes(userMeals), buildDishOverrideMap(dishOverrides), intent.slot, householdMeals)
       const matchMeal = recs.find((m) => m.dishes.some((d) => d.name.toLowerCase().includes(lc))) ?? recs[0]
       if (!matchMeal) return `Couldn't build a meal with ${intent.dishName}. Try a different dish name.`
       const matchedDish = matchMeal.dishes.find((d) => d.name.toLowerCase().includes(lc)) ?? matchMeal.dishes[0]
@@ -1434,11 +1444,12 @@ function App() {
         <section className="meal-grid">
           {mealOptions.map((meal, index) => {
             const count = voteResult.tallies[meal.id] ?? 0
-            return <article className={`meal-card ${selected?.id === meal.id ? 'selected' : ''} ${voteResult.winner === meal.id ? 'winner' : ''}`} key={meal.id}>
+            return <article className={`meal-card ${selected?.id === meal.id ? 'selected' : ''} ${voteResult.winner === meal.id ? 'winner' : ''} ${meal.isCustom ? 'custom' : ''}`} key={meal.id}>
               <button className="meal-select" onClick={() => chooseMeal(meal)} aria-label={`Choose ${meal.title}`}>
                 <div className="meal-art" style={{ '--meal-color': meal.dishes[0].color } as React.CSSProperties}>
                   <span className="option-index">0{index + 1}</span>
                   <div className="plate"><div className="food-shape" /><div className="garnish">✦</div></div>
+                  {meal.isCustom && <span className="custom-badge"><Sparkles size={13} /> Your meal</span>}
                   {meal.match >= 80 && <span className="match-badge"><Check size={14} /> {meal.match}% pantry match</span>}
                   {voting.enabled && count > 0 && <span className="vote-badge"><Vote size={13} /> {count}</span>}
                 </div>
@@ -1640,6 +1651,7 @@ function App() {
             setMealHistory([])
             setMealPlansByDate({})
             setVoterPreferences([])
+            setHouseholdMeals([])
             setForceOnboarding(true)
           }}><Sparkles size={17} /> Re-run pantry setup</button>
           <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #eee7dc' }}>
@@ -1661,6 +1673,7 @@ function App() {
                 setMealHistory([])
                 setMealPlansByDate({})
                 setVoterPreferences([])
+                setHouseholdMeals([])
                 alert('Wiped. Reload to see a clean state, or use Re-run pantry setup to start over.')
               } catch (e) { console.error(e); alert('Could not wipe. Try again.') }
             }}><Trash2 size={17} /> Delete all my data</button>
@@ -1670,6 +1683,7 @@ function App() {
 
       {tab === 'recipes' && household && <RecipesTab
         userMeals={userMeals}
+        householdMeals={householdMeals}
         inventory={inventory}
         dishOverrides={dishOverrides}
         onCreate={async (meal) => {
@@ -1714,6 +1728,24 @@ function App() {
         onResetCurated={async (dishId) => {
           await api.deleteDishOverride(household.id, dishId)
           setDishOverrides((prev) => prev.filter((o) => o.dish_id !== dishId))
+        }}
+        onCreateComposed={async (meal) => {
+          try {
+            const created = await api.addHouseholdMeal(household.id, meal)
+            setHouseholdMeals((prev) => [created, ...prev])
+            return created
+          } catch (e) { console.error(e); return null }
+        }}
+        onUpdateComposed={async (id, patch) => {
+          try {
+            const updated = await api.updateHouseholdMeal(id, patch)
+            setHouseholdMeals((prev) => prev.map((m) => m.id === id ? updated : m))
+            return updated
+          } catch (e) { console.error(e); return null }
+        }}
+        onDeleteComposed={async (id) => {
+          await api.deleteHouseholdMeal(id)
+          setHouseholdMeals((prev) => prev.filter((m) => m.id !== id))
         }}
       />}
     </main>
@@ -1905,6 +1937,27 @@ const emptyRecipeDraft = (): RecipeDraft => ({
   ingredients: [],
 })
 
+// ============================================================================
+// Phase E: composed meals
+// ============================================================================
+
+type ComposedMealDraft = {
+  name: string
+  description: string
+  slot: api.MealSlot | null
+  // The dishes the user picked. Each is `{id, name}` — id is the seed DISH
+  // id (or 'user-...' for user-authored recipes, which the engine resolves
+  // against DISHES + userMealsToDishes). Min 1, max 8 (display-friendly).
+  dishIds: string[]
+}
+
+const emptyComposedDraft = (): ComposedMealDraft => ({
+  name: '',
+  description: '',
+  slot: null,
+  dishIds: [],
+})
+
 function RecipeEditor({
   inventory,
   draft,
@@ -1997,6 +2050,7 @@ function RecipeEditor({
 
 function RecipesTab({
   userMeals,
+  householdMeals,
   inventory,
   dishOverrides,
   onCreate,
@@ -2006,8 +2060,12 @@ function RecipesTab({
   onEditCurated,
   onUnhideCurated,
   onResetCurated,
+  onCreateComposed,
+  onUpdateComposed,
+  onDeleteComposed,
 }: {
   userMeals: api.UserMeal[]
+  householdMeals: api.HouseholdMeal[]
   inventory: InventoryItem[]
   dishOverrides: api.DishOverrideRow[]
   onCreate: (meal: Omit<api.UserMeal, 'id' | 'household_id' | 'created_at' | 'updated_at'>) => Promise<api.UserMeal | null>
@@ -2017,12 +2075,25 @@ function RecipesTab({
   onEditCurated: (dishId: string, override: Dish) => Promise<void>
   onUnhideCurated: (dishId: string) => Promise<void>
   onResetCurated: (dishId: string) => Promise<void>
+  onCreateComposed: (meal: Omit<api.HouseholdMeal, 'id' | 'household_id' | 'created_at' | 'updated_at'>) => Promise<api.HouseholdMeal | null>
+  onUpdateComposed: (id: string, patch: Partial<Omit<api.HouseholdMeal, 'id' | 'household_id' | 'created_at'>>) => Promise<api.HouseholdMeal | null>
+  onDeleteComposed: (id: string) => Promise<void>
 }) {
   const [editing, setEditing] = useState<{ mode: 'create' } | { mode: 'edit'; id: string } | null>(null)
   const [editingCurated, setEditingCurated] = useState<Dish | null>(null)
   const [draft, setDraft] = useState<RecipeDraft>(emptyRecipeDraft())
   const [saving, setSaving] = useState(false)
-  const [tab, setCuratedTab] = useState<'yours' | 'curated'>('yours')
+  const [tab, setCuratedTab] = useState<'yours' | 'composed' | 'curated'>('yours')
+
+  // Phase E composed-meal editor state. Same shape as RecipesTab's
+  // editing flag (mode+id) so the editor renders in-place when open.
+  const [composedEditing, setComposedEditing] = useState<
+    | { mode: 'create' }
+    | { mode: 'edit'; meal: api.HouseholdMeal }
+    | null
+  >(null)
+  const [composedDraft, setComposedDraft] = useState<ComposedMealDraft>(emptyComposedDraft())
+  const [composedSaving, setComposedSaving] = useState(false)
 
   const startCreate = () => { setDraft(emptyRecipeDraft()); setEditing({ mode: 'create' }) }
   const startEdit = (m: api.UserMeal) => {
@@ -2038,6 +2109,92 @@ function RecipesTab({
     setEditing({ mode: 'edit', id: m.id })
   }
   const cancel = () => { setEditing(null); setSaving(false) }
+
+  // Phase E: composed-meal open/save/cancel handlers. Saving computes
+  // match_count via the same per-dish ingredient check the engine uses,
+  // so the badge on Today reads a consistent number whether the user
+  // gets there via Compose flow or the engine auto-bundles.
+  const startCreateComposed = () => {
+    setComposedDraft(emptyComposedDraft())
+    setComposedEditing({ mode: 'create' })
+  }
+  const startEditComposed = (meal: api.HouseholdMeal) => {
+    setComposedDraft({
+      name: meal.name,
+      description: meal.description,
+      slot: meal.slot,
+      dishIds: meal.dishes.map((d) => d.id),
+    })
+    setComposedEditing({ mode: 'edit', meal })
+  }
+  const cancelComposed = () => { setComposedEditing(null); setComposedSaving(false) }
+
+  // Resolve picked ids to the same `{id, name}` shape the engine expects.
+  // Seed ids come from DISHES; user ids are `user-<uuid>` (see
+  // userMealsToDishes). If the user picks a stale id (e.g. a deleted
+  // user_meal) we drop it — silently — rather than block save.
+  const resolveComposedDishes = (): { id: string; name: string }[] => {
+    const out: { id: string; name: string }[] = []
+    for (const id of composedDraft.dishIds) {
+      if (id.startsWith('user-')) {
+        const um = userMeals.find((m) => `user-${m.id}` === id)
+        if (um) out.push({ id, name: um.name })
+        continue
+      }
+      const seed = DISHES.find((d) => d.id === id)
+      if (seed) out.push({ id, name: seed.name })
+    }
+    return out
+  }
+
+  // Match percentage: of the resolved dishes, what fraction are fully
+  // covered by the kitchen inventory? Mirrors the engine's `match`
+  // calc on the primary return path.
+  const computeMatchCount = (dishes: { id: string }[]): number => {
+    if (dishes.length === 0) return 0
+    const stock = new Map(inventory.map((i) => [i.id, i.quantity]))
+    let covered = 0
+    for (const d of dishes) {
+      // User meals carry their own ingredients; seed dishes too.
+      const ings = d.id.startsWith('user-')
+        ? (userMeals.find((m) => `user-${m.id}` === d.id)?.ingredients ?? [])
+        : (DISHES.find((sd) => sd.id === d.id)?.ingredients ?? [])
+      if (ings.length === 0) { covered += 1; continue }
+      const all = ings.every((u) => (stock.get(u.ingredientId) ?? 0) >= u.quantity)
+      if (all) covered += 1
+    }
+    return Math.round((covered / dishes.length) * 100)
+  }
+
+  const saveComposed = async () => {
+    setComposedSaving(true)
+    try {
+      const dishes = resolveComposedDishes()
+      if (dishes.length === 0) {
+        alert('Pick at least one dish for the composed meal.')
+        setComposedSaving(false)
+        return
+      }
+      const match = computeMatchCount(dishes)
+      const payload = {
+        name: composedDraft.name.trim() || dishes.map((d) => d.name).join(' + '),
+        description: composedDraft.description.trim(),
+        slot: composedDraft.slot,
+        dishes,
+        match_count: match,
+      }
+      if (composedEditing?.mode === 'create') {
+        const created = await onCreateComposed(payload)
+        if (created) setComposedEditing(null)
+      } else if (composedEditing?.mode === 'edit') {
+        const updated = await onUpdateComposed(composedEditing.meal.id, payload)
+        if (updated) setComposedEditing(null)
+      }
+    } catch (e) {
+      console.error('Save composed meal failed:', e)
+      alert('Could not save composed meal. Try again.')
+    } finally { setComposedSaving(false) }
+  }
 
   const save = async () => {
     setSaving(true)
@@ -2097,6 +2254,22 @@ function RecipesTab({
     />
   }
 
+  // Phase E composed-meal editor renders in place, same pattern as the
+  // RecipeEditor above. When the user picks "New composed meal" or hits
+  // Edit on an existing one, the recipe grid is hidden and the editor
+  // takes the full section width.
+  if (composedEditing) {
+    return <ComposedMealEditor
+      draft={composedDraft}
+      setDraft={setComposedDraft}
+      userMeals={userMeals}
+      onSave={saveComposed}
+      onCancel={cancelComposed}
+      saving={composedSaving}
+      title={composedEditing.mode === 'create' ? 'New composed meal' : `Edit ${composedEditing.mode === 'edit' ? composedEditing.meal.name : ''}`}
+    />
+  }
+
   const ovByDishId = new Map(dishOverrides.map((o) => [o.dish_id, o]))
 
   return <section className="page-section recipes-page">
@@ -2107,6 +2280,7 @@ function RecipesTab({
     </div>
     <div className="recipes-tabs" role="tablist">
       <button role="tab" aria-selected={tab === 'yours'} className={`recipes-tab ${tab === 'yours' ? 'active' : ''}`} onClick={() => setCuratedTab('yours')}>Your recipes <em>{userMeals.length}</em></button>
+      <button role="tab" aria-selected={tab === 'composed'} className={`recipes-tab ${tab === 'composed' ? 'active' : ''}`} onClick={() => setCuratedTab('composed')}>Composed meals <em>{householdMeals.length}</em></button>
       <button role="tab" aria-selected={tab === 'curated'} className={`recipes-tab ${tab === 'curated' ? 'active' : ''}`} onClick={() => setCuratedTab('curated')}>Curated dishes <em>{DISHES.length}</em></button>
     </div>
 
@@ -2137,6 +2311,37 @@ function RecipesTab({
               <button className="reset-button mini danger" onClick={async () => {
                 if (!window.confirm(`Delete "${m.name}"? It'll stop appearing in suggestions.`)) return
                 try { await onDelete(m.id) } catch (e) { console.error(e); alert('Could not delete. Try again.') }
+              }}><Trash2 size={14} /> Delete</button>
+            </div>
+          </div>
+        </article>)}
+      </div>}
+    </>}
+
+    {tab === 'composed' && <>
+      <div className="recipes-toolbar">
+        <button className="primary" onClick={startCreateComposed}><Plus size={17} /> New composed meal</button>
+      </div>
+      {householdMeals.length === 0 ? <div className="empty-state">
+        <Layers size={28} />
+        <p>No composed meals yet. Tap "New composed meal" to bundle a few dishes into one meal — say "Cucumber + Salad + Anda Bhurji + Roti" — and it'll show up on Today alongside the auto-bundled options.</p>
+      </div> : <div className="recipes-grid">
+        {householdMeals.map((m) => <article key={m.id} className="recipe-card composed" style={{ '--meal-color': m.dishes[0] ? '#b96d35' : '#888' } as React.CSSProperties}>
+          <div className="recipe-art"><div className="plate"><div className="food-shape" /></div></div>
+          <div className="recipe-body">
+            <div className="meal-meta">
+              <span><Layers size={14} /> {m.dishes.length} dishes</span>
+              {m.slot && <span>{m.slot.charAt(0)}{m.slot.slice(1).toLowerCase()}</span>}
+              {m.match_count > 0 && <span>{m.match_count}% match</span>}
+            </div>
+            <h2>{m.name}</h2>
+            <p>{m.description || 'Your composed meal'}</p>
+            <ul>{m.dishes.slice(0, 6).map((d, i) => <li key={i}><span className="dish-dot" /><span><b>{d.name}</b></span></li>)}{m.dishes.length > 6 && <li className="recipe-more">+{m.dishes.length - 6} more</li>}</ul>
+            <div className="recipe-card-actions">
+              <button className="reset-button mini" onClick={() => startEditComposed(m)}>Edit</button>
+              <button className="reset-button mini danger" onClick={async () => {
+                if (!window.confirm(`Delete "${m.name}"? It'll stop appearing in suggestions.`)) return
+                try { await onDeleteComposed(m.id) } catch (e) { console.error(e); alert('Could not delete. Try again.') }
               }}><Trash2 size={14} /> Delete</button>
             </div>
           </div>
@@ -2193,6 +2398,139 @@ function RecipesTab({
 // Editor for an existing curated dish. Pre-fills with the current
 // effective values (override wins over curated). Save writes a fresh
 // override via onEditCurated — there's no "save as new", just edit-in-place.
+function ComposedMealEditor({
+  draft,
+  setDraft,
+  userMeals,
+  onSave,
+  onCancel,
+  saving,
+  title,
+}: {
+  draft: ComposedMealDraft
+  setDraft: React.Dispatch<React.SetStateAction<ComposedMealDraft>>
+  userMeals: api.UserMeal[]
+  onSave: () => Promise<void>
+  onCancel: () => void
+  saving: boolean
+  title: string
+}) {
+  // The picker lists curated DISHES + the household's user_meals. We
+  // group curated dishes by `kind` so the user can see mains/sides/
+  // breads/rice at a glance; user_meals land in a separate group.
+  const toggle = (id: string) => setDraft((d) => ({
+    ...d,
+    dishIds: d.dishIds.includes(id) ? d.dishIds.filter((x) => x !== id) : [...d.dishIds, id],
+  }))
+  const grouped = useMemo(() => {
+    const byKind: Record<string, typeof DISHES> = {}
+    for (const d of DISHES) {
+      const k = d.kind ?? 'main'
+      if (!byKind[k]) byKind[k] = []
+      byKind[k].push(d)
+    }
+    return byKind
+  }, [])
+  const canSave = draft.dishIds.length > 0 && !saving
+  return <div className="recipe-editor">
+    <div className="page-heading">
+      <span className="eyebrow"><Layers size={14} /> COMPOSED MEAL</span>
+      <h1>{title}</h1>
+      <p>Bundle a few dishes into one meal. It surfaces on Today as a single option you can pick in one tap — instead of the engine auto-bundling different dishes each refresh.</p>
+    </div>
+    <div className="recipe-form">
+      <label className="text-field">
+        <span>Meal name</span>
+        <input
+          value={draft.name}
+          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+          placeholder="Auto-generated from dishes if you leave this blank"
+          autoFocus
+        />
+      </label>
+      <label className="text-field">
+        <span>Short subtitle (optional)</span>
+        <input
+          value={draft.description}
+          onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+          placeholder="e.g. Light weekday dinner"
+        />
+      </label>
+      <label className="setting-row">
+        <span><b>Slot</b><small>When this meal fits — leave on "Any" if it's flexible</small></span>
+        <select value={draft.slot ?? ''} onChange={(e) => setDraft({ ...draft, slot: e.target.value === '' ? null : (e.target.value as api.MealSlot) })}>
+          <option value="">Any time</option>
+          <option value="BREAKFAST">Breakfast</option>
+          <option value="LUNCH">Lunch</option>
+          <option value="DINNER">Dinner</option>
+          <option value="SNACKS">Snacks</option>
+        </select>
+      </label>
+
+      <div className="composed-dishes">
+        <div className="composed-dishes-head">
+          <span><b>Pick the dishes</b><small>Choose 1–8. Use curated dishes and your own recipes.</small></span>
+        </div>
+        {Object.entries(grouped).map(([kind, list]) => <div key={kind} className="composed-dishes-group">
+          <h4>{kind}</h4>
+          <div className="composed-dishes-grid">
+            {list.map((d) => {
+              const picked = draft.dishIds.includes(d.id)
+              return <button
+                key={d.id}
+                type="button"
+                className={`composed-dish ${picked ? 'picked' : ''}`}
+                onClick={() => toggle(d.id)}
+                aria-pressed={picked}
+              >
+                <span className="composed-dish-dot" style={{ background: d.color }} />
+                <span className="composed-dish-body">
+                  <b>{d.name}</b>
+                  <small>{d.time} min · {d.vegetarian ? 'Veg' : 'Non-veg'}</small>
+                </span>
+                {picked && <Check size={16} className="composed-dish-check" />}
+              </button>
+            })}
+          </div>
+        </div>)}
+        {userMeals.length > 0 && <div className="composed-dishes-group">
+          <h4>Your recipes</h4>
+          <div className="composed-dishes-grid">
+            {userMeals.map((m) => {
+              const id = `user-${m.id}`
+              const picked = draft.dishIds.includes(id)
+              return <button
+                key={id}
+                type="button"
+                className={`composed-dish ${picked ? 'picked' : ''}`}
+                onClick={() => toggle(id)}
+                aria-pressed={picked}
+              >
+                <span className="composed-dish-dot" style={{ background: m.color ?? '#b96d35' }} />
+                <span className="composed-dish-body">
+                  <b>{m.name}</b>
+                  <small>{m.time} min · {m.vegetarian ? 'Veg' : 'Non-veg'}</small>
+                </span>
+                {picked && <Check size={16} className="composed-dish-check" />}
+              </button>
+            })}
+          </div>
+        </div>}
+      </div>
+
+      {draft.dishIds.length > 0 && <div className="composed-dishes-summary">
+        <span><b>{draft.dishIds.length} dish{draft.dishIds.length === 1 ? '' : 'es'} picked</b></span>
+        <small>Title will be: {draft.name.trim() || '(joined from selected dishes)'}</small>
+      </div>}
+
+      <div className="recipe-actions">
+        <button className="primary" onClick={onSave} disabled={!canSave}>{saving ? 'Saving…' : <><Check size={17} /> Save composed meal</>}</button>
+        <button className="reset-button" onClick={onCancel} disabled={saving}>Cancel</button>
+      </div>
+    </div>
+  </div>
+}
+
 function CuratedDishEditor({
   dish,
   inventory,

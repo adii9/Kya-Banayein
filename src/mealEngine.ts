@@ -39,6 +39,13 @@ export type MealOption = {
   dishes: Dish[]
   totalTime: number
   match: number
+  // Phase E marker. When set, this option was authored by the household
+  // from a composed meal (multiple dishes combined). `customId` is the
+  // household_meals row id. The UI uses these to render the "Your meal"
+  // badge and to route inventory decrement against the full composed
+  // dish list rather than the auto-bundled one.
+  isCustom?: boolean
+  customId?: string
 }
 
 export const DISHES: Dish[] = [
@@ -156,9 +163,50 @@ export function recommendMeals(
   // across slots. Pass null/undefined to fall back to the legacy
   // "any slot" behavior (used by the chat plan intent).
   slot: MealSlot | null = null,
+  // Phase E composed meals. Each one is rendered as its own MealOption
+  // in the grid alongside the auto-bundled curated + user_meal options.
+  // A composed meal is the household's authored combination of 1..n
+  // dishes; the user picks the dishes up-front when authoring, so this
+  // engine doesn't have to do the bundling. Optional + defaulted so
+  // every existing call site and test keeps working unchanged.
+  composedMeals: { id: string; name: string; slot: MealSlot | null; dishes: { id: string; name: string }[]; match_count: number }[] = [],
 ): MealOption[] {
   const curated = applyDishOverrides(DISHES, overrides)
   const allDishes: Dish[] = [...curated, ...userMeals]
+
+  // Phase E composed meals: filter by slot (if provided) and convert
+  // each into a MealOption. They appear in the grid alongside the
+  // curated + user_meal options, so users see their custom composed
+  // meals as first-class choices. Resolved up-front so the fallback
+  // path (empty slot-eligible pool) can also surface them — composed
+  // meals are user-authored and shouldn't disappear just because the
+  // slot pool is empty.
+  const composedOptions: MealOption[] = composedMeals
+    .filter((cm) => !slot || !cm.slot || cm.slot === slot)
+    .map((cm) => {
+      const resolved: Dish[] = cm.dishes.map((d) => {
+        const seed = DISHES.find((s) => s.id === d.id)
+        if (seed) return seed
+        // Wholly-custom dish (no seed match). Synthesize a minimal Dish
+        // so the type stays happy and the renderer has colour / time.
+        return {
+          id: d.id, name: d.name, description: 'Custom', time: 15,
+          vegetarian: true, kind: 'main', color: '#888', ingredients: [],
+        }
+      })
+      const totalTime = resolved.length > 0 ? Math.max(...resolved.map((d) => d.time)) : 0
+      return {
+        id: `composed-${cm.id}`,
+        title: cm.name,
+        note: 'Your composed meal',
+        dishes: resolved,
+        totalTime,
+        match: cm.match_count,
+        isCustom: true,
+        customId: cm.id,
+      }
+    })
+
   // Slot filter: a dish with `slots` set is only eligible when the
   // caller's slot is in the list. A dish with no `slots` field
   // (legacy / user-authored with no tag) is eligible for every slot.
@@ -176,10 +224,10 @@ export function recommendMeals(
   // still sees something instead of a blank screen.
   if (ranked.length === 0) {
     const fallback = allDishes.filter((dish) => !preferences.vegetarian || dish.vegetarian)
-    if (fallback.length === 0) return []
+    if (fallback.length === 0) return composedOptions
     // Sort by total cook time so the user at least sees quick options.
     fallback.sort((a, b) => a.time - b.time)
-    return Array.from({ length: Math.max(1, preferences.suggestionCount) }, (_, optionIndex) => {
+    const curatedFallback = Array.from({ length: Math.max(1, preferences.suggestionCount) }, (_, optionIndex) => {
       const dishes = Array.from({ length: Math.max(1, preferences.dishesPerMeal) }, (_, dishIndex) => fallback[(optionIndex * preferences.dishesPerMeal + dishIndex) % fallback.length])
       return {
         id: `${slot ?? 'any'}-meal-${optionIndex}`,
@@ -190,10 +238,11 @@ export function recommendMeals(
         match: 0,
       }
     })
+    return [...composedOptions, ...curatedFallback]
   }
 
   const slotPrefix = slot ?? 'any'
-  return Array.from({ length: Math.max(1, preferences.suggestionCount) }, (_, optionIndex) => {
+  const curatedOptions = Array.from({ length: Math.max(1, preferences.suggestionCount) }, (_, optionIndex) => {
     const dishes = Array.from({ length: Math.max(1, preferences.dishesPerMeal) }, (_, dishIndex) => ranked[(optionIndex * preferences.dishesPerMeal + dishIndex) % ranked.length])
     const uses = dishes.flatMap((dish) => dish.ingredients)
     const available = uses.filter((use) => (stock.get(use.ingredientId) ?? 0) >= use.quantity).length
@@ -211,6 +260,7 @@ export function recommendMeals(
       match,
     }
   })
+  return [...composedOptions, ...curatedOptions]
 }
 
 // Match ingredients by name (id-based matching broke when inventory uses
