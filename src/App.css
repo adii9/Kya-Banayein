@@ -10,7 +10,8 @@
   --shadow: rgba(75, 55, 35, .04) 0 0 0 1px, rgba(75, 55, 35, .08) 0 5px 16px, rgba(75, 55, 35, .04) 0 16px 32px;
 }
 
-.app-shell { min-height: 100vh; padding-bottom: 104px; background: radial-gradient(circle at 70% 0%, rgba(181, 131, 70, .09), transparent 28%), var(--paper); }
+.app-shell { min-height: 100vh; padding-bottom: 120px; background: radial-gradient(circle at 70% 0%, rgba(181, 131, 70, .09), transparent 28%), var(--paper); }
+.app-shell { padding-bottom: max(120px, env(safe-area-inset-bottom, 0px) + 120px); }
 header { height: 80px; padding: 0 max(28px, calc((100vw - 1180px) / 2)); display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(82, 60, 39, .1); background: rgba(247,243,234,.88); backdrop-filter: blur(14px); position: sticky; top: 0; z-index: 20; }
 .brand { border: 0; background: transparent; display: flex; align-items: center; gap: 12px; cursor: pointer; text-align: left; padding: 0; }
 .brand-mark { width: 44px; height: 44px; border-radius: 14px; background: var(--red); color: white; display: grid; place-items: center; box-shadow: inset 0 0 0 1px rgba(255,255,255,.2); }
@@ -41,6 +42,8 @@ h1 { font-family: 'DM Serif Display', serif; font-size: clamp(42px, 6vw, 68px); 
 .food-shape { width: 91px; height: 91px; border-radius: 45% 55% 52% 48%; background: radial-gradient(circle at 35% 30%, #f3c85c 0 7%, transparent 8%), radial-gradient(circle at 62% 65%, #6f883d 0 8%, transparent 9%), radial-gradient(circle at 40% 50%, color-mix(in srgb, var(--meal-color) 60%, #e1ad3d), var(--meal-color)); box-shadow: inset 0 0 20px rgba(75,35,10,.18); }
 .garnish { position: absolute; color: #fff6d4; font-size: 20px; }
 .match-badge { position: absolute; right: 14px; bottom: 14px; background: rgba(255,253,248,.94); color: var(--green); padding: 7px 10px; border-radius: 15px; font-size: 10px; font-weight: 700; display: flex; align-items: center; gap: 4px; }
+.custom-badge { position: absolute; left: 14px; bottom: 14px; background: rgba(193, 39, 45, .92); color: #fff8eb; padding: 7px 10px; border-radius: 15px; font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }
+.meal-card.custom { border-color: rgba(193, 39, 45, .35); box-shadow: 0 0 0 1px rgba(193, 39, 45, .12), var(--shadow); }
 .meal-body { padding: 20px; }
 .meal-meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
 .meal-meta span { display: flex; align-items: center; gap: 5px; }
@@ -112,13 +115,13 @@ h1 { font-family: 'DM Serif Display', serif; font-size: clamp(42px, 6vw, 68px); 
 .toggle-row input:checked { background: var(--green); }
 .toggle-row input:checked:before { transform: translateX(21px); }
 .reset-button { margin: 18px 0 10px; height: 42px; border: 1px solid #e3cabe; background: #fff8f4; color: var(--red); padding: 0 15px; border-radius: 11px; display: flex; gap: 8px; align-items: center; cursor: pointer; }
-.bottom-nav { position: fixed; z-index: 30; bottom: 18px; left: 50%; transform: translateX(-50%); width: min(470px, calc(100% - 28px)); height: 68px; padding: 7px; background: rgba(42,35,30,.96); backdrop-filter: blur(16px); border-radius: 23px; box-shadow: 0 18px 45px rgba(36,24,16,.25); display: grid; grid-template-columns: repeat(4, 1fr); }
-.bottom-nav button { border: 0; background: transparent; color: #c7beb3; border-radius: 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; cursor: pointer; }
+.bottom-nav { position: fixed; z-index: 30; bottom: 18px; left: 50%; transform: translateX(-50%); width: min(560px, calc(100% - 28px)); height: 68px; padding: 7px; background: rgba(42,35,30,.96); backdrop-filter: blur(16px); border-radius: 23px; box-shadow: 0 18px 45px rgba(36,24,16,.25); display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; }
+.bottom-nav button { border: 0; background: transparent; color: #c7beb3; border-radius: 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; cursor: pointer; min-width: 0; padding: 0 2px; }
 .bottom-nav svg { width: 20px; height: 20px; }
-.bottom-nav span { font-size: 9px; font-weight: 600; }
+.bottom-nav span { font-size: 9px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 .bottom-nav button.active { background: #fff8eb; color: var(--red); }
 .icon-wrap { position: relative; }
-.icon-wrap i { position: absolute; top: -5px; right: -8px; background: var(--red); color: white; border: 2px solid var(--ink); min-width: 16px; height: 16px; border-radius: 8px; font-style: normal; font-size: 8px; display: grid; place-items: center; }
+.icon-wrap i { position: absolute; top: -2px; right: -2px; background: var(--red); color: white; border: 1.5px solid var(--paper); min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; font-style: normal; font-size: 9px; font-weight: 700; display: grid; place-items: center; line-height: 1; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
 
 @media (max-width: 920px) {
   main { width: min(100% - 32px, 720px); }
@@ -154,6 +157,35 @@ h1 { font-family: 'DM Serif Display', serif; font-size: clamp(42px, 6vw, 68px); 
   .text-field input { width: 100%; }
   .setting-row { min-height: 78px; }
   .bottom-nav { bottom: 10px; }
+}
+/* Narrow-phone polish (≤480px — iPhone SE, iPhone 14, etc.). Header
+   collapses further; bottom-nav shrinks to fit. */
+@media (max-width: 480px) {
+  header { padding: 0 12px; gap: 8px; }
+  header .brand b { font-size: 16px; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Sign-out pill is hidden on narrow phones — accessible from
+     Settings (Family tab has the member list; Rules tab doesn't
+     have it yet, so we keep the pill visible at >=620px and ≥481px).
+     Until a sign-out button lands in Rules, we surface it via
+     tapping the brand pill to open the household page, where a
+     full sign-out row will live. For now: keep it, just shrink it. */
+  .signout-pill { width: 34px; height: 34px; }
+  .family-pill { width: 38px; height: 38px; }
+  /* Bottom nav: shrink icons + label so 6 items fit on a 360px viewport. */
+  .bottom-nav { width: calc(100% - 20px); height: 60px; padding: 5px; border-radius: 20px; bottom: 8px; }
+  .bottom-nav svg { width: 18px; height: 18px; }
+  .bottom-nav span { font-size: 8px; letter-spacing: -0.2px; }
+  .bottom-nav button { gap: 2px; border-radius: 13px; padding: 0 1px; }
+  /* Hero copy: tighter padding, smaller headline */
+  .hero-copy { padding: 22px 0 14px; gap: 14px; }
+  h1, .page-heading h1 { font-size: 36px; line-height: 1.1; }
+  /* Slot selector buttons: smaller chips */
+  .slot-selector { gap: 6px; }
+  .slot-selector button { padding: 8px 12px; font-size: 12px; }
+  /* Confirmation bar above the shorter nav */
+  .confirmation-bar { bottom: 80px; }
+  /* Chat FAB sits above the nav */
+  .chat-fab { bottom: 84px; right: 16px; width: 50px; height: 50px; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 .chat-fab { position: fixed; right: 22px; bottom: 100px; width: 56px; height: 56px; border: 0; border-radius: 50%; background: var(--ink); color: white; box-shadow: 0 14px 32px rgba(0,0,0,.25); display: grid; place-items: center; cursor: pointer; z-index: 25; }
@@ -406,6 +438,27 @@ header .brand small { color: var(--muted); }
 .onboarding-item.custom { border-color: rgba(220,165,49,.4); }
 
 /* ============================================================================
+ * Dislikes section (Phase 3, Today tab)
+ * ============================================================================ */
+.dislikes-section { margin-top: 32px; padding: 20px; background: var(--card); border: 1px solid #e5ddd1; border-radius: 18px; }
+.dislikes-section .page-heading { margin-bottom: 14px; }
+.dislikes-section .page-heading h2 { font-size: 22px; margin: 4px 0; }
+.dislikes-section .page-heading p { color: var(--muted); font-size: 13px; margin: 0; }
+.dislike-chips { list-style: none; padding: 0; margin: 0 0 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+.dislike-empty { color: var(--muted); font-size: 13px; font-style: italic; padding: 8px 0; }
+.dislike-chip { display: inline-flex; align-items: center; gap: 6px; background: rgba(180,80,60,.08); border: 1px solid rgba(180,80,60,.25); border-radius: 999px; padding: 3px 8px 3px 12px; font-size: 13px; color: var(--ink); }
+.dislike-chip .dislike-slot-pill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--red); background: rgba(180,80,60,.12); padding: 1px 6px; border-radius: 999px; font-style: normal; }
+.dislike-chip button { background: transparent; border: none; color: var(--muted); cursor: pointer; padding: 0; display: inline-flex; align-items: center; }
+.dislike-chip button:hover { color: var(--red); }
+.dislike-add-btn { background: transparent; border: 1px dashed rgba(180,80,60,.35); color: var(--muted); border-radius: 8px; padding: 6px 12px; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.dislike-add-btn:hover { color: var(--red); border-color: var(--red); }
+.dislike-add-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.dislike-add-row input { flex: 1 1 140px; min-width: 120px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; background: #fff; }
+.dislike-add-row select { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; background: #fff; }
+.dislike-add-row button { padding: 4px 12px; font-size: 12px; }
+.dislike-tags .dislike-slot-pill { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--red); background: rgba(180,80,60,.12); padding: 1px 6px; border-radius: 999px; font-style: normal; margin-left: 4px; }
+
+/* ============================================================================
  * Family page (Phase B)
  * ============================================================================ */
 .family-page .family-add-row { display: flex; gap: 8px; margin-bottom: 24px; }
@@ -439,3 +492,128 @@ header .brand small { color: var(--muted); }
   .family-slot-col { padding: 4px 0; border-top: 1px dashed rgba(220,165,49,.2); }
   .family-slot-col::before { content: attr(data-slot); display: block; font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
 }
+
+/* =========================================================================
+   Recipes tab — user-authored meals
+   ========================================================================= */
+
+.recipes-page .recipes-toolbar { display: flex; justify-content: flex-end; margin-bottom: 14px; }
+
+/* Two-tab switcher: Your recipes / Curated dishes. Sits at the top of
+   the Recipes page so the user can jump between user-authored meals and
+   the bundled defaults. Counts in <em> badges give instant feedback. */
+.recipes-tabs { display: flex; gap: 4px; padding: 4px; background: rgba(220,165,49,.08); border-radius: 12px; margin-bottom: 16px; width: fit-content; }
+.recipes-tab { background: transparent; border: none; padding: 8px 14px; border-radius: 9px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; display: inline-flex; align-items: center; gap: 8px; transition: background .15s, color .15s; }
+.recipes-tab em { font-style: normal; font-size: 11px; background: rgba(0,0,0,.06); color: var(--ink); padding: 2px 7px; border-radius: 10px; }
+.recipes-tab:hover { color: var(--ink); }
+.recipes-tab.active { background: white; color: var(--ink); box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+.recipes-tab.active em { background: var(--orange); color: white; }
+
+/* Composed-meals tab uses a slightly different badge colour so the
+   user can tell their authored multi-dish meals apart from the
+   single-recipe "Your recipes" tab. */
+.recipes-tab[aria-selected="true"]:nth-of-type(2) em { background: var(--red); }
+
+.curated-hint { color: var(--muted); font-size: 12px; line-height: 1.55; padding: 10px 14px; background: rgba(220,165,49,.06); border: 1px dashed rgba(220,165,49,.3); border-radius: 10px; margin: 0 0 16px; }
+
+.recipes-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+.recipe-card { background: var(--card); border: 1px solid #e8e0d1; border-radius: 18px; overflow: hidden; box-shadow: var(--shadow); display: flex; flex-direction: column; }
+.recipe-card.curated.edited { border-color: rgba(220,165,49,.4); box-shadow: 0 0 0 1px rgba(220,165,49,.15), var(--shadow); }
+.recipe-card.curated.hidden { opacity: .55; }
+.recipe-card.composed { border-color: rgba(193, 39, 45, .25); box-shadow: 0 0 0 1px rgba(193, 39, 45, .08), var(--shadow); }
+.recipe-card.curated.hidden .recipe-art { filter: grayscale(.6); }
+.recipe-overlay-tag { position: absolute; top: 10px; right: 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .8px; padding: 4px 9px; border-radius: 100px; background: rgba(0,0,0,.55); color: white; }
+.recipe-overlay-tag.alt { background: var(--orange); }
+.recipe-card .recipe-art { background: color-mix(in srgb, var(--meal-color, #b96d35) 24%, #f8efde 76%); height: 96px; display: grid; place-items: center; position: relative; }
+.recipe-card .recipe-art .plate { width: 70px; height: 70px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, color-mix(in srgb, var(--meal-color, #b96d35) 75%, white 25%), var(--meal-color, #b96d35)); box-shadow: 0 6px 18px rgba(0,0,0,.08); position: relative; overflow: hidden; }
+.recipe-card .recipe-art .plate::before { content: ''; position: absolute; inset: 12px; border-radius: 50%; background: radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--meal-color, #b96d35) 65%, white 35%), color-mix(in srgb, var(--meal-color, #b96d35) 85%, #2c1810 15%)); }
+.recipe-card .recipe-body { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 10px; }
+.recipe-card .recipe-body h2 { font-family: 'DM Serif Display', serif; font-size: 20px; font-weight: 400; margin: 0; }
+.recipe-card .recipe-body p { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 0; }
+.recipe-card .meal-meta { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .4px; }
+.recipe-card .meal-meta span { display: inline-flex; align-items: center; gap: 4px; }
+.recipe-card ul { list-style: none; padding: 0; margin: 4px 0 0; display: flex; flex-direction: column; gap: 6px; }
+.recipe-card ul li { display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--ink); }
+.recipe-card ul li.recipe-more { color: var(--muted); font-style: italic; padding-left: 24px; }
+.recipe-card .dish-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.recipe-card .recipe-card-actions { display: flex; gap: 8px; margin-top: 6px; }
+.recipe-card .recipe-card-actions .danger { color: var(--red); }
+.recipe-card .recipe-card-actions .danger:hover { background: rgba(193, 39, 45, .1); }
+
+/* ----- Editor ----- */
+.recipe-editor { display: flex; flex-direction: column; gap: 16px; }
+.recipe-form { background: var(--card); border: 1px solid #e8e0d1; border-radius: 18px; padding: 22px 24px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 14px; }
+.recipe-form .text-field input { width: 100%; height: 42px; border: 1px solid var(--line); background: white; padding: 0 12px; border-radius: 11px; font-size: 14px; }
+.recipe-form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.recipe-form .num-input { width: 80px; height: 36px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; font-size: 14px; text-align: center; background: white; }
+.recipe-form select { height: 36px; border: 1px solid var(--line); border-radius: 10px; padding: 0 10px; background: white; font-size: 13px; }
+.color-swatches { display: flex; gap: 8px; }
+.swatch { width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; transition: transform .12s; }
+.swatch:hover { transform: scale(1.08); }
+.swatch.active { border-color: var(--ink); box-shadow: 0 0 0 2px white inset; }
+.recipe-ingredients { display: flex; flex-direction: column; gap: 10px; padding-top: 6px; border-top: 1px solid #eee7dc; }
+.recipe-ingredients-head { display: flex; justify-content: space-between; align-items: flex-start; }
+.recipe-hint { color: var(--muted); font-size: 12px; padding: 6px 0; margin: 0; }
+.recipe-ingredient-row { display: grid; grid-template-columns: 1fr 80px 36px 36px; gap: 8px; align-items: center; }
+.recipe-ingredient-row select { height: 36px; border: 1px solid var(--line); border-radius: 10px; padding: 0 8px; background: white; font-size: 13px; }
+.recipe-ingredient-row .num-input { width: 100%; }
+.recipe-ingredient-row small { color: var(--muted); font-size: 11px; text-align: center; }
+.recipe-actions { display: flex; gap: 10px; margin-top: 6px; }
+.recipe-actions .primary { flex: 1; }
+@media (max-width: 540px) {
+  .recipe-form-row { grid-template-columns: 1fr; }
+  .recipe-ingredient-row { grid-template-columns: 1fr 70px 28px 28px; }
+}
+
+/* =========================================================================
+   Veg-mode pill — 1-tap preference toggle on Today
+   ========================================================================= */
+.veg-mode-pill { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-radius: 14px; background: var(--card); border: 1px solid #e8e0d1; margin-bottom: 16px; box-shadow: var(--shadow); }
+.veg-mode-pill svg { color: var(--green); flex-shrink: 0; }
+.veg-mode-pill[data-veg="false"] svg { color: var(--orange); }
+.veg-mode-pill span { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.veg-mode-pill b { font-size: 13px; }
+.veg-mode-pill small { color: var(--muted); font-size: 11px; }
+.veg-toggle { position: relative; width: 52px; height: 30px; border-radius: 18px; border: none; background: #d2cab8; cursor: pointer; transition: background .2s; padding: 0; }
+.veg-toggle.on { background: var(--green); }
+.veg-toggle-knob { position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: white; box-shadow: 0 2px 5px rgba(0,0,0,.2); transition: transform .2s; }
+.veg-toggle.on .veg-toggle-knob { transform: translateX(22px); }
+
+.reset-button.danger { color: var(--red); border-color: rgba(193, 39, 45, .3); }
+.reset-button.danger:hover { background: rgba(193, 39, 45, .1); border-color: var(--red); }
+
+/* =========================================================================
+   Recipes CTA — shown on Today when no user meals exist
+   ========================================================================= */
+.recipes-cta { display: flex; align-items: center; gap: 18px; padding: 16px 18px; background: linear-gradient(135deg, rgba(220,165,49,.08), rgba(220,165,49,.02)); border: 1px solid rgba(220,165,49,.25); border-radius: 14px; margin-bottom: 16px; }
+.recipes-cta > div { flex: 1; }
+.recipes-cta .eyebrow { color: var(--orange); }
+.recipes-cta h3 { font-family: 'DM Serif Display', serif; font-size: 18px; font-weight: 400; margin: 4px 0 4px; }
+.recipes-cta p { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 0; }
+.recipes-cta .primary { white-space: nowrap; }
+@media (max-width: 540px) { .recipes-cta { flex-direction: column; align-items: stretch; } .recipes-cta .primary { width: 100%; } }
+
+/* Onboarding footnote — small "and there's also Recipes" callout */
+.onboarding-footnote { color: var(--muted); font-size: 12px; line-height: 1.55; padding: 12px 14px; background: rgba(220,165,49,.06); border-radius: 10px; margin: 0 0 18px; border: 1px dashed rgba(220,165,49,.25); }
+.onboarding-footnote b { color: var(--ink); }
+
+/* =========================================================================
+   Composed-meal editor (Recipes tab → Composed meals → New)
+   ========================================================================= */
+.composed-dishes { background: rgba(255,253,248,.6); border: 1px solid #e8e0d1; border-radius: 14px; padding: 14px; margin-top: 6px; }
+.composed-dishes-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+.composed-dishes-head small { color: var(--muted); font-size: 11px; }
+.composed-dishes-group { margin-bottom: 12px; }
+.composed-dishes-group:last-child { margin-bottom: 0; }
+.composed-dishes-group h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); font-weight: 700; }
+.composed-dishes-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+.composed-dish { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--card); border: 1px solid #e8e0d1; border-radius: 10px; cursor: pointer; text-align: left; transition: border-color .15s, background .15s, transform .1s; font: inherit; color: inherit; }
+.composed-dish:hover { border-color: rgba(220,165,49,.5); }
+.composed-dish.picked { border-color: var(--red); background: rgba(193, 39, 45, .04); }
+.composed-dish-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.composed-dish-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.composed-dish-body b { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composed-dish-body small { font-size: 11px; color: var(--muted); }
+.composed-dish-check { color: var(--red); flex-shrink: 0; }
+.composed-dishes-summary { margin-top: 12px; padding: 10px 12px; background: rgba(220,165,49,.06); border-radius: 10px; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.composed-dishes-summary small { color: var(--muted); font-size: 11px; text-align: right; }

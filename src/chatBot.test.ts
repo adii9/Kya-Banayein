@@ -55,4 +55,27 @@ describe('parseCommand', () => {
     if (result.kind !== 'unknown') throw new Error('expected unknown')
     expect(result.reply).toMatch(/meal|खान|பதம்|ఆహార|ભોજ/i)
   })
+
+  // B7 — preference-record intent
+  it('emits preference-record when a known voter name + dish + slot appear', () => {
+    const result = parseCommand('Diya loves poha for breakfast', ['Diya', 'Mom'])
+    expect(result.kind).toBe('preference-record')
+    if (result.kind !== 'preference-record') throw new Error('expected preference-record')
+    expect(result.voterName).toBe('Diya')
+    expect(result.slot).toBe('BREAKFAST')
+    expect(result.mealName).toBeTruthy()  // any non-empty dish name (poha isn't in DISH_KEYWORDS so it falls back to extractNoun; either way the intent fires)
+  })
+
+  it('does not emit preference-record when no voters are passed', () => {
+    const result = parseCommand('Diya loves poha for breakfast')
+    // With no voter names hint, the parser can't disambiguate and falls
+    // through to the like/feed branch or unknown. We assert it does NOT
+    // claim to be a preference-record, so the App doesn't silently attach.
+    expect(result.kind).not.toBe('preference-record')
+  })
+
+  it('does not emit preference-record when the named voter is unknown', () => {
+    const result = parseCommand('Diya loves poha for breakfast', ['Mom', 'Dad'])
+    expect(result.kind).not.toBe('preference-record')
+  })
 })

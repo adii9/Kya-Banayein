@@ -18,6 +18,15 @@ export const generateJoinCode = (): string => {
   return `JOIN-${out}`
 }
 
+// One thing the household doesn't eat. slot is optional — when absent the
+// dislike applies at any time. dayOfWeek is also optional (0=Sunday..6=Sat)
+// for the future "no non-veg on Tuesdays" use case.
+export type Dislike = {
+  name: string
+  slot?: 'BREAKFAST' | 'LUNCH' | 'DINNER' | null
+  dayOfWeek?: number | null
+}
+
 export type Household = {
   id: string
   owner_id: string
@@ -28,6 +37,9 @@ export type Household = {
   voting_enabled: boolean
   onboarding_complete: boolean
   join_code: string | null
+  dislikes: Dislike[]  // JSONB column, always present (default '[]')
+  suggestion_count: number  // 1-12, from Migration 0010
+  dishes_per_meal: number    // 1-6, from Migration 0010
 }
 
 export type Voter = { id: string; name: string; invite_code: string }
@@ -169,6 +181,7 @@ export type MealPlan = {
   plan_date: string  // ISO date 'YYYY-MM-DD'
   slot: MealSlot
   meal_id: string | null
+  excluded_dishes: string[]  // dish names the user toggled off in the editor
   confirmed_at: string | null
   created_at: string
   updated_at: string
@@ -183,9 +196,22 @@ export const fetchMealPlansForDay = async (householdId: string, isoDate: string)
   return (data ?? []) as MealPlan[]
 }
 
-export const upsertMealPlan = async (householdId: string, isoDate: string, slot: MealSlot, mealId: string | null) => {
+export const upsertMealPlan = async (
+  householdId: string,
+  isoDate: string,
+  slot: MealSlot,
+  mealId: string | null,
+  excludedDishes: string[] = [],
+) => {
   const { data, error } = await table('meal_plans')
-    .upsert({ household_id: householdId, plan_date: isoDate, slot, meal_id: mealId, updated_at: new Date().toISOString() }, { onConflict: 'household_id,plan_date,slot' })
+    .upsert({
+      household_id: householdId,
+      plan_date: isoDate,
+      slot,
+      meal_id: mealId,
+      excluded_dishes: excludedDishes,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'household_id,plan_date,slot' })
     .select('*')
   if (error) throw error
   return data?.[0] as MealPlan
@@ -308,5 +334,180 @@ export const addVoterPreference = async (pref: Omit<VoterMealPreference, 'id' | 
 
 export const deleteVoterPreference = async (id: string) => {
   const { error } = await table('voter_meal_preferences').delete().eq('id', id)
+  if (error) throw error
+}
+
+// ============================================================================
+// User-authored meals — household-scoped recipes the user builds themselves.
+// ============================================================================
+
+// Mirrors the mealEngine.Dish shape so a user meal can flow through the
+// existing rendering pipeline (recommendMeals → MealOption → UI). One
+// user_meal row = one Dish entry. To bundle multiple dishes into one
+// recommended meal, we group by a shared `meal_title` on the client.
+export type UserMeal = {
+  id: string
+  household_id: string
+  name: string                  // dish name ("Rajma")
+  description: string           // short subtitle
+  time: number                  // cook minutes
+  vegetarian: boolean
+  kind: 'main' | 'side' | 'bread' | 'rice'
+  color: string | null
+  ingredients: { ingredientId: string; quantity: number }[]
+  sort_order: number
+  created_at: string
+  updated_at: string
+}
+
+export const fetchUserMeals = async (householdId: string): Promise<UserMeal[]> => {
+  const { data, error } = await table('user_meals')
+    .select('*')
+    .eq('household_id', householdId)
+    .order('sort_order', { ascending: true })
+    .order('created_at', { ascending: true })
+  if (error) throw error
+  return (data ?? []) as UserMeal[]
+}
+
+export const addUserMeal = async (householdId: string, meal: Omit<UserMeal, 'id' | 'household_id' | 'created_at' | 'updated_at'>): Promise<UserMeal> => {
+  const row = { household_id: householdId, ...meal }
+  const { data, error } = await table('user_meals').insert(row).select('*').single()
+  if (error) throw error
+  return data as UserMeal
+}
+
+export const updateUserMeal = async (id: string, patch: Partial<Omit<UserMeal, 'id' | 'household_id' | 'created_at'>>): Promise<UserMeal> => {
+  const { data, error } = await table('user_meals')
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select('*')
+    .single()
+  if (error) throw error
+  return data as UserMeal
+}
+
+export const deleteUserMeal = async (id: string) => {
+  const { error } = await table('user_meals').delete().eq('id', id)
+  if (error) throw error
+}
+
+// ============================================================================
+// Phase E: composed meals (multiple dishes in one recommended meal).
+// One row in `household_meals` = one composed meal. Each composed meal
+// has 1..n dishes. The client renders the meals alongside the curated
+// and single-dish user_meals in the Today tab.
+// ============================================================================
+
+export type HouseholdMeal = {
+  id: string
+  household_id: string
+  name: string                  // meal title (e.g. "Cucumber + Salad + Anda Bhurji + Roti")
+  description: string           // subtitle
+  slot: 'BREAKFAST' | 'LUNCH' | 'DINNER' | null
+  dishes: { id: string; name: string }[]   // 1..n dishes, by seed id (or custom UUID)
+  match_count: number           // 0..100, set by the App before save
+  created_at: string
+  updated_at: string
+}
+
+export const fetchHouseholdMeals = async (householdId: string): Promise<HouseholdMeal[]> => {
+  const { data, error } = await table('household_meals')
+    .select('*')
+    .eq('household_id', householdId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return (data ?? []) as HouseholdMeal[]
+}
+
+export const addHouseholdMeal = async (householdId: string, meal: Omit<HouseholdMeal, 'id' | 'household_id' | 'created_at' | 'updated_at'>): Promise<HouseholdMeal> => {
+  const row = { household_id: householdId, ...meal }
+  const { data, error } = await table('household_meals').insert(row).select('*').single()
+  if (error) throw error
+  return data as HouseholdMeal
+}
+
+export const updateHouseholdMeal = async (id: string, patch: Partial<Omit<HouseholdMeal, 'id' | 'household_id' | 'created_at'>>): Promise<HouseholdMeal> => {
+  const { data, error } = await table('household_meals')
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select('*')
+    .single()
+  if (error) throw error
+  return data as HouseholdMeal
+}
+
+export const deleteHouseholdMeal = async (id: string) => {
+  const { error } = await table('household_meals').delete().eq('id', id)
+  if (error) throw error
+}
+
+// ============================================================================
+// Reset household data — atomic wipe of operational rows, household kept
+// ============================================================================
+
+// Calls the reset_household_data(uuid) Postgres function. Returns the
+// function's error if the caller isn't the household owner (RPC throws
+// 42501 — surfaced via the .rpc() promise). The household row itself
+// is preserved, so the user stays signed in and can re-onboard.
+export const resetHouseholdData = async (householdId: string): Promise<void> => {
+  const { error } = await supabase.rpc('reset_household_data', { p_household_id: householdId })
+  if (error) throw error
+}
+
+// ============================================================================
+// Per-household overrides for curated DISHES (hide / edit)
+// ============================================================================
+
+// One row per (household_id, dish_id). `hidden` filters the dish out of
+// the household's pool; `override` replaces the curated fields when set.
+// Both can coexist (hidden takes priority; override fields are ignored
+// while hidden — we don't surface hidden dishes for editing).
+export type DishOverrideRow = {
+  id: string
+  household_id: string
+  dish_id: string
+  hidden: boolean
+  override: Dish | null
+  created_at: string
+  updated_at: string
+}
+
+export const fetchDishOverrides = async (householdId: string): Promise<DishOverrideRow[]> => {
+  const { data, error } = await table('household_dish_overrides')
+    .select('*')
+    .eq('household_id', householdId)
+  if (error) throw error
+  return (data ?? []) as DishOverrideRow[]
+}
+
+// Upsert a hide-or-edit override for one curated dish. Pass both
+// `hidden` and `override` fields — the row is keyed by
+// (household_id, dish_id), so subsequent calls just update it.
+export const upsertDishOverride = async (
+  householdId: string,
+  dishId: string,
+  patch: { hidden?: boolean; override?: Dish | null },
+): Promise<DishOverrideRow> => {
+  const row = {
+    household_id: householdId,
+    dish_id: dishId,
+    hidden: patch.hidden ?? false,
+    override: patch.override ?? null,
+    updated_at: new Date().toISOString(),
+  }
+  const { data, error } = await table('household_dish_overrides')
+    .upsert(row, { onConflict: 'household_id,dish_id' })
+    .select('*')
+    .single()
+  if (error) throw error
+  return data as DishOverrideRow
+}
+
+export const deleteDishOverride = async (householdId: string, dishId: string) => {
+  const { error } = await table('household_dish_overrides')
+    .delete()
+    .eq('household_id', householdId)
+    .eq('dish_id', dishId)
   if (error) throw error
 }

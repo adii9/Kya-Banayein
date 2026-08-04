@@ -3,7 +3,7 @@ export type ChatIntent =
   | { kind: 'preference'; action: 'set-suggestions'; value: number }
   | { kind: 'preference'; action: 'set-dishes'; value: number }
   | { kind: 'preference'; action: 'set-members'; value: number }
-  | { kind: 'feed'; dislike: string | null; like: string | null }
+  | { kind: 'feed'; dislike: string | null; like: string | null; dislikeSlot?: 'BREAKFAST' | 'LUNCH' | 'DINNER' | null }
   // F3 — chat-driven inventory updates. The chat returns a parsed intent
   // and the App applies it. We don't return a target ingredient id (the
   // matcher uses substring lookup on the dish keyword table).
@@ -11,9 +11,10 @@ export type ChatIntent =
   | { kind: 'inventory'; action: 'use'; itemName: string; quantity: number; unit: string }
   // F2/F4 — plan a meal slot. Caller passes the date as ISO YYYY-MM-DD.
   | { kind: 'plan'; slot: 'BREAKFAST' | 'LUNCH' | 'DINNER'; dishName: string; mood?: string }
-  // F5 — voter-keyed preference. We don't bind to a specific voter in the
-  // intent; the App applies it to the active voter (or first one).
-  | { kind: 'preference-record'; mealName: string; slot: 'BREAKFAST' | 'LUNCH' | 'DINNER' | null; dayOfWeek?: number }
+  // F5 — voter-keyed preference. parser passes voterName when a known
+  // voter name appears in the input; otherwise App falls back to the
+  // first voter (or returns a friendly "add a member first" message).
+  | { kind: 'preference-record'; mealName: string; slot: 'BREAKFAST' | 'LUNCH' | 'DINNER' | null; dayOfWeek?: number; voterName?: string }
   | { kind: 'unknown'; reply: string }
 const REPLY_HI = 'मैं सिर्फ खाने से जुड़ी बातें समझता हूँ—जैसे शाकाहारी, सुझाव, या पसंद।'
 const REPLY_TA = 'நான் சாப்பாட்டு விஷயங்கள் மட்டும் தான் புரிந்துகொள்கிறேன்.'
@@ -64,7 +65,7 @@ const DISH_KEYWORDS: Record<string, string> = {
   'mutton': 'mutton', 'मटन': 'mutton', 'ஆட்டு': 'mutton', 'మటన్': 'mutton', 'ಕುರಿ': 'mutton', 'খাসি': 'mutton',
 }
 
-export function parseCommand(input: string): ChatIntent {
+export function parseCommand(input: string, voterNames: string[] = []): ChatIntent {
   const text = input.trim()
   if (!text) return { kind: 'unknown', reply: REPLY_HI }
   const lower = text.toLowerCase()
@@ -92,9 +93,43 @@ export function parseCommand(input: string): ChatIntent {
     }
   }
 
+  // Detect a per-meal-time slot from the user input. Only fires when
+  // a dislike keyword is present so we don't accidentally slot-tag a
+  // generic statement.
+  const detectDislikeSlot = (lower: string): 'BREAKFAST' | 'LUNCH' | 'DINNER' | null => {
+    if (/\bbreakfast\b|सुबह|नाश्ता|காலை|ఉదయం|ಬೆಳಗ್ಗೆ|সকাল/.test(lower)) return 'BREAKFAST'
+    if (/\blunch\b|दोपहर|மதியம்|మధ్యాహ్నం|ಮಧ್ಯಾಹ್ನ|দুপুর/.test(lower)) return 'LUNCH'
+    if (/\bdinner\b|रात|रात का|இரவு|రాత్రి|ರಾತ್ರಿ|সন্ধ্যা|সાંজে/.test(lower)) return 'DINNER'
+    return null
+  }
+
   const dislike = DISLIKE_HINTS.some((h) => lower.includes(h)) ? matchDish(lower) : null
   const like = !dislike && LIKE_HINTS.some((h) => lower.includes(h)) ? matchDish(lower) : null
-  if (dislike || like) return { kind: 'feed', dislike, like }
+  if (dislike || like) {
+    const dislikeSlot = dislike ? detectDislikeSlot(lower) : null
+    return { kind: 'feed', dislike, like, dislikeSlot }
+  }
+
+  // F5 — voter-keyed preference. Fires when the user names a known voter
+  // AND mentions a dish we recognise AND a slot keyword. We only emit
+  // this when voterNames is supplied; without that hint we can't tell
+  // "Diya loves poha" from a generic statement and would silently
+  // attach to the wrong person.
+  if (voterNames.length > 0 && LIKE_HINTS.some((h) => lower.includes(h))) {
+    const namedVoter = voterNames.find((n) => lower.includes(n.toLowerCase()))
+    if (namedVoter) {
+      const dish = matchDish(lower) ?? extractNoun(lower)
+      if (dish) {
+        const slot = (() => {
+          if (/\b(breakfast|सुबह|नाश्ता|காலை|ఉదయం|ಬೆಳಗ್ಗೆ|সকাল)\b/.test(lower)) return 'BREAKFAST' as const
+          if (/\b(lunch|दोपहर|மதியம்|మధ్యాహ్నం|ಮಧ್ಯಾಹ್ನ|দুপুর)\b/.test(lower)) return 'LUNCH' as const
+          if (/\b(dinner|रात|रात का|இரவు|రాత్రి|সন্ধ্যা|সাংজে)\b/.test(lower)) return 'DINNER' as const
+          return null
+        })()
+        return { kind: 'preference-record', mealName: dish, slot, voterName: namedVoter }
+      }
+    }
+  }
 
   // F3 — inventory updates via chat. Match "add 2 kg rice" / "I used 3 eggs".
   const inventoryAction = (() => {
