@@ -1529,7 +1529,7 @@ function App() {
                   ><Trash2 size={14} /> Delete</button>}
                 </div>
               </header>
-              {poll && <div className="slot-tally">
+              {poll && !poll.closed_at && <div className="slot-tally">
                 <div className="slot-tally-header">
                   <span className="eyebrow">VOTING</span>
                   <span className="slot-tally-count">{votesCast} / {voterCount || '–'} voted</span>
