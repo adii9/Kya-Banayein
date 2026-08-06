@@ -263,6 +263,61 @@ export function recommendMeals(
   return [...composedOptions, ...curatedOptions]
 }
 
+// Phase G: walks a slot's ManualDish[] and resolves each pick to its
+// IngredientUse[] via the matching curated / user-meal / composed-meal
+// row. Ad-hoc picks return no ingredients and surface in `skipped` so
+// the caller can toast the user. Composed-meals expand their inner
+// DISHES list and union the ingredient sets.
+export type ManualDishLike = {
+  dish_id: string | null
+  name: string
+  source: 'user_meal' | 'household_meal' | 'curated' | 'adhoc'
+}
+
+export type ResolvedPicks = {
+  uses: IngredientUse[]
+  skipped: ManualDishLike[]
+  unresolved: ManualDishLike[]
+}
+
+const looksLikeDish = (d: any): d is Dish => !!d && Array.isArray(d.ingredients) && typeof d.name === 'string'
+
+export function resolvePicksToUses(
+  picks: ManualDishLike[],
+  curatedDishes: Dish[],
+  userMeals: { id: string; ingredients: IngredientUse[] }[],
+  composedMeals: { id: string; dishes: { id: string; name: string }[] }[],
+): ResolvedPicks {
+  const uses: IngredientUse[] = []
+  const skipped: ManualDishLike[] = []
+  const unresolved: ManualDishLike[] = []
+  const curatedById = new Map(curatedDishes.map((d) => [d.id, d]))
+  const userMealById = new Map(userMeals.map((m) => [m.id, m]))
+  const composedById = new Map(composedMeals.map((m) => [m.id, m]))
+  for (const pick of picks) {
+    if (pick.source === 'adhoc' || pick.dish_id == null) { skipped.push(pick); continue }
+    if (pick.source === 'curated') {
+      const d = curatedById.get(pick.dish_id)
+      if (!d) { unresolved.push(pick); continue }
+      uses.push(...d.ingredients)
+    } else if (pick.source === 'user_meal') {
+      const m = userMealById.get(pick.dish_id)
+      if (!m || !Array.isArray(m.ingredients)) { unresolved.push(pick); continue }
+      uses.push(...m.ingredients)
+    } else if (pick.source === 'household_meal') {
+      const m = composedById.get(pick.dish_id)
+      if (!m) { unresolved.push(pick); continue }
+      const found: Dish[] = []
+      for (const inner of m.dishes) {
+        const innerDish = curatedById.get(inner.id)
+        if (innerDish && looksLikeDish(innerDish)) found.push(innerDish)
+      }
+      for (const f of found) uses.push(...f.ingredients)
+    }
+  }
+  return { uses, skipped, unresolved }
+}
+
 // Match ingredients by name (id-based matching broke when inventory uses
 // UUIDs from Supabase and dish recipes use string ids like 'atta' /
 // 'rice'). Two-way substring match handles both directions:
