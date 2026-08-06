@@ -32,3 +32,10 @@ export const supabase = createClient(URL ?? FALLBACK_URL, ANON ?? FALLBACK_ANON,
 })
 
 export const SUPABASE_URL = URL ?? FALLBACK_URL
+
+// VITE_APP_URL is the public URL where the deployed app lives. Share links
+// (voting, WhatsApp, etc.) MUST point here, not at the raw Supabase URL.
+// In production this is the Vercel app; in dev it's whatever the user sets
+// or http://localhost:5173 so local links still work.
+const APP_URL = import.meta.env.VITE_APP_URL as string | undefined
+export const APP_BASE_URL = APP_URL && APP_URL.length > 0 ? APP_URL.replace(/\/$/, '') : 'https://kya-banayein-theta.vercel.app'
