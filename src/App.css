@@ -386,7 +386,46 @@ header .brand small { color: var(--muted); }
 .dish-toggle span small { color: rgba(255,255,255,.6); font-size: 11px; }
 .confirmation-bar button.primary:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* ============================================================================
+/* =============================================================================
+   VoterLanding — stripped voting page rendered when URL has ?join=...
+   Hides the dashboard entirely; shows only the poll ballot.
+   ============================================================================ */
+
+.voter-landing { background: var(--bg-soft); min-height: 100vh; }
+.voter-landing-card { max-width: 480px; padding: 28px 24px; }
+.voter-landing-card h1 { font-size: 24px; margin-bottom: 8px; line-height: 1.2; }
+.voter-landing-card p { font-size: 14px; color: var(--muted); margin: 4px 0 18px; }
+.voter-landing-options { list-style: none; padding: 0; margin: 0 0 18px; display: flex; flex-direction: column; gap: 12px; }
+.voter-landing-option {
+  display: block; width: 100%; text-align: left;
+  padding: 16px 18px; border: 2px solid var(--line); border-radius: 14px;
+  background: white; cursor: pointer; font: inherit; color: inherit;
+  transition: border-color .12s, background .12s;
+}
+.voter-landing-option:hover:not(:disabled) { border-color: var(--orange); background: rgba(255,247,237,.5); }
+.voter-landing-option:disabled { cursor: default; opacity: .8; }
+.voter-landing-option.mine { border-color: var(--orange); background: rgba(255,247,237,.6); }
+.voter-landing-option.closed { border-color: var(--line); }
+.voter-landing-option-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.voter-landing-option-letter {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 50%;
+  background: var(--orange); color: white; font-weight: 700; font-size: 13px; flex-shrink: 0;
+}
+.voter-landing-option-head b { font-size: 16px; font-weight: 600; }
+.voter-mine-tag {
+  display: inline-block; margin-left: auto;
+  padding: 2px 8px; border-radius: 999px;
+  background: var(--orange); color: white;
+  font-size: 11px; font-weight: 600;
+}
+.voter-landing-option-dishes { font-size: 13px; color: var(--muted); margin: 2px 0 8px 36px; line-height: 1.3; }
+.voter-landing-option-meter { height: 6px; border-radius: 999px; background: rgba(0,0,0,.05); overflow: hidden; margin: 6px 0 4px 36px; }
+.voter-landing-option-meter i { display: block; height: 100%; background: var(--orange); transition: width .25s; }
+.voter-landing-option-count { font-size: 11px; color: var(--muted); margin-left: 36px; }
+.voter-landing-foot { display: block; margin-top: 16px; text-align: center; font-size: 11px; color: var(--muted); }
+
+/* =============================================================================
  * KitchenOnboarding wizard (Phase A)
  * ============================================================================ */
 .onboarding-progress { margin-bottom: 20px; }

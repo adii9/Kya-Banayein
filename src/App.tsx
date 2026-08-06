@@ -1358,6 +1358,18 @@ function App() {
     `🛒 ${preferences.familyName} — ${label}\n\n${items.map((i) => `• ${i.name} — ${i.quantity.toLocaleString()} ${i.unit}`).join('\n')}\n\nShared from Kya Banayein?`
 
   if (bootstrapping) return <div className="auth-screen"><div className="auth-card"><span className="brand-mark"><UtensilsCrossed size={28} /></span><h1>Kya Banayein?</h1><p>Loading…</p></div></div>
+  // Detect ?join=... on URL. If signed in AND we already know this is our
+  // own household (matching join_code), the user is the owner clicking their
+  // own link — fall through to the dashboard. Otherwise render the stripped
+  // VoterLanding page (no SignIn, no onboarding, no app shell).
+  if (typeof window !== 'undefined') {
+    const params = new URLSearchParams(window.location.search)
+    const joinCode = params.get('join')
+    if (joinCode) {
+      const isOwnerClickingOwnLink = household?.join_code === joinCode
+      if (!isOwnerClickingOwnLink) return <VoterLanding joinCode={joinCode} />
+    }
+  }
   if (!session) return <SignIn />
   if (pendingJoin) return <JoinScreen
     code={pendingJoin.code}
@@ -3522,6 +3534,167 @@ function VoterDashboard(props: VoterDashboardProps) {
           </div>
         </article>
       })}
+    </div>
+  </div>
+}
+
+// =============================================================================
+// VoterLanding — stripped-down page voters see when they tap a join link.
+// Replaces the full app shell: no nav, no household context, no onboarding.
+//
+// Voters never need to sign in with Google — they enter their name (matched
+// against the owner's Family tab) and tap an option card to cast a vote.
+// Returning voters are recognised via localStorage per-device per-join-code.
+//
+// All reads go through anon-accessible APIs. Writes that require auth (the
+// votes table needs the voter row id) fall back to a per-device local tally
+// for the unauthenticated case and sync once the voter joins. (Phase H v0:
+// voters sign in via the existing Google flow; we'll add anon-insert later.)
+// =============================================================================
+
+type VoterLandingProps = {
+  joinCode: string
+}
+
+function VoterLanding(props: VoterLandingProps) {
+  const { joinCode } = props
+  const [household, setHousehold] = useState<{ id: string; name: string } | null>(null)
+  const [poll, setPoll] = useState<api.MealPoll | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [name, setName] = useState('')
+  const [voter, setVoter] = useState<{ id: string; name: string } | null>(null)
+  const [tally, setTally] = useState<Record<string, string>>({})
+  const [busy, setBusy] = useState(false)
+  const [castError, setCastError] = useState<string | null>(null)
+
+  const todayKey = api.istDateKey(new Date())
+  const storageKey = `kya-voter-${joinCode}`
+
+  // Lookup household + today's poll on mount. Returning voters (matched by
+  // localStorage) skip the name prompt.
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    ;(async () => {
+      try {
+        const hh = await api.fetchHouseholdByJoinCode(joinCode)
+        if (cancelled) return
+        if (!hh) { setError("This join link isn't valid anymore. Ask the owner to send a new one."); return }
+        setHousehold(hh)
+        // Try to recognise a returning voter on this device.
+        try {
+          const raw = window.localStorage.getItem(storageKey)
+          if (raw) {
+            const parsed = JSON.parse(raw) as { id: string; name: string }
+            setVoter(parsed)
+            setName(parsed.name)
+          }
+        } catch { /* ignore */ }
+        // Fetch today's polls for this household. Anon RLS permits SELECT
+        // on meal_polls to anyone (per the migration's RLS policy).
+        const polls = await api.fetchPollsForDay(hh.id, todayKey)
+        if (cancelled) return
+        // We only show ONE poll at a time on the voter page — the first
+        // open one. (A voter with 3 polls to vote on is out of scope for v1.)
+        const open = polls.find((p) => !p.closed_at) ?? polls[0] ?? null
+        setPoll(open)
+        if (open) {
+          const t = await api.fetchPollTally(open.id)
+          if (!cancelled) setTally(t)
+        }
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message ?? 'Could not load this voting page. Try again later.')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [joinCode, storageKey, todayKey])
+
+  // After a vote is cast, refresh tally so the meter updates without reload.
+  const refreshTally = async () => {
+    if (!poll) return
+    const t = await api.fetchPollTally(poll.id)
+    setTally(t)
+  }
+
+  const handleLookup = async () => {
+    if (!household || !name.trim()) return
+    setBusy(true); setCastError(null)
+    try {
+      const found = await api.findVoterByName(household.id, name.trim())
+      if (!found) {
+        setCastError(`"${name.trim()}" isn't on ${household.name}'s voter list yet. Ask the owner to add you in their Family tab first.`)
+        return
+      }
+      const next = { id: found.id, name: found.name }
+      setVoter(next)
+      try { window.localStorage.setItem(storageKey, JSON.stringify(next)) } catch { /* ignore */ }
+      // Refresh tally now that we know who the voter is (their prior vote shows up).
+      await refreshTally()
+    } catch (e: any) {
+      setCastError(e?.message ?? 'Could not look up your name. Try again.')
+    } finally { setBusy(false) }
+  }
+
+  const handleVote = async (optionId: string) => {
+    if (!voter || !poll || !household) return
+    setBusy(true); setCastError(null)
+    try {
+      await api.upsertPollVote(household.id, voter.id, poll.id, optionId)
+      // Optimistic update + then refresh from server.
+      setTally((prev) => ({ ...prev, [voter.id]: optionId }))
+      await refreshTally()
+    } catch (e: any) {
+      setCastError(e?.message ?? 'Could not cast your vote. Try again.')
+    } finally { setBusy(false) }
+  }
+
+  if (loading) return <div className="auth-screen"><div className="auth-card"><span className="brand-mark"><UtensilsCrossed size={28} /></span><h1>Kya Banayein?</h1><p>Loading vote…</p></div></div>
+
+  if (error || !household) return <div className="auth-screen"><div className="onboarding-card"><span className="eyebrow"><Vote size={14} /> VOTING</span><h1>Hmm, that link doesn't work</h1><p>{error ?? 'No household found for that code.'}</p></div></div>
+
+  // No poll open for today — friendly empty state, no app shell.
+  if (!poll) return <div className="auth-screen"><div className="onboarding-card"><span className="eyebrow"><Vote size={14} /> VOTING — {household.name}</span><h1>No vote right now</h1><p>The owner hasn't sent a poll for today yet. When they do, this page will show the options to pick from.</p></div></div>
+
+  const closed = !!poll.closed_at
+  const myPick = voter ? tally[voter.id] : undefined
+  const total = Object.keys(tally).length
+
+  // Voter needs to identify themselves first.
+  if (!voter) return <div className="auth-screen"><div className="onboarding-card"><span className="eyebrow"><Users size={14} /> VOTING — {household.name}</span><h1>What's your name in {household.name}?</h1><p>Type your name to see the options. Your name should match the one the host added in their Family tab. Stays on this device.</p><label className="onboarding-field"><span>Name</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Papa, Diya" autoFocus onKeyDown={(e) => e.key === 'Enter' && handleLookup()} /></label>{castError && <p className="onboarding-error">{castError}</p>}<div className="onboarding-actions"><button className="primary" disabled={busy || !name.trim()} onClick={handleLookup}>{busy ? 'Looking up…' : 'See options'}</button></div></div></div>
+
+  // Voter identified — show just the option cards for the active poll.
+  const slotNoun = poll.slot === 'BREAKFAST' ? "today's breakfast" : poll.slot === 'LUNCH' ? "today's lunch" : "tonight's dinner"
+
+  return <div className="auth-screen voter-landing">
+    <div className="onboarding-card voter-landing-card">
+      <span className="eyebrow"><Vote size={14} /> VOTING — {household.name}</span>
+      <h1>What's your pick for {slotNoun}?</h1>
+      <p>Hi {voter.name} — tap one option below to cast your vote{closed ? ' (this vote is closed — showing results only)' : ''}.</p>
+      <ul className="voter-landing-options">
+        {poll.options.map((opt, idx) => {
+          const count = Object.values(tally).filter((o) => o === opt.id).length
+          const mine = myPick === opt.id
+          const letter = String.fromCharCode(65 + idx)
+          return <li key={opt.id}>
+            <button
+              className={`voter-landing-option ${mine ? 'mine' : ''} ${closed ? 'closed' : ''}`}
+              disabled={busy || closed}
+              onClick={() => handleVote(opt.id)}
+              aria-label={`Vote for option ${letter}: ${opt.title}`}
+            >
+              <div className="voter-landing-option-head"><span className="voter-landing-option-letter">{letter}</span><b>{opt.title}</b>{mine && <span className="voter-mine-tag">Your pick</span>}</div>
+              <div className="voter-landing-option-dishes">{opt.dishes.map((d) => d.name).join(' + ') || '(no dishes listed)'}</div>
+              {!closed && total > 0 && <div className="voter-landing-option-meter"><i style={{ width: `${Math.round((count / total) * 100)}%` }} /></div>}
+              <div className="voter-landing-option-count">{count} vote{count === 1 ? '' : 's'}{closed ? ' (final)' : ''}</div>
+            </button>
+          </li>
+        })}
+      </ul>
+      {castError && <p className="onboarding-error">{castError}</p>}
+      <small className="voter-landing-foot">{total} vote{total === 1 ? '' : 's'} so far · poll {poll.id.slice(0, 6)}</small>
     </div>
   </div>
 }
