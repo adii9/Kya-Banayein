@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Session } from '@supabase/supabase-js'
-import { Check, ChevronRight, Clock3, Eye, EyeOff, Leaf, LogOut, MessageCircle, Mic, MicOff, Minus, Package, Plus, RotateCcw, Send, Settings2, Share2, ShoppingBasket, Sparkles, Trash2, Users, UtensilsCrossed, Volume2, Vote, X } from 'lucide-react'
+import { Check, ChevronRight, Clock3, Layers, Leaf, LogOut, MessageCircle, Mic, MicOff, Minus, Package, Plus, RotateCcw, Send, Settings2, Share2, ShoppingBasket, Sparkles, Trash2, Users, UtensilsCrossed, Volume2, Vote, X } from 'lucide-react'
 import './App.css'
-import { buildDishOverrideMap, confirmMeal, DEFAULT_INVENTORY, DISHES, getOrderSuggestions, recommendMeals, type Dish, type InventoryItem, type MealOption, type UserDish } from './mealEngine'
+import * as mealEngine from './mealEngine'
+const { buildDishOverrideMap, confirmMeal, DEFAULT_INVENTORY, DISHES, getOrderSuggestions, recommendMeals } = mealEngine
+type Dish = mealEngine.Dish
+type InventoryItem = mealEngine.InventoryItem
+type MealOption = mealEngine.MealOption
+type UserDish = mealEngine.UserDish
 import { parseCommand, SUPPORTED_LANGS, type ChatIntent } from './chatBot'
-import { addVoter as _addVoter, buildWhatsAppShareUrl, castVote as _castVote, createPoll, getResults, type Poll, type PollResult } from './voting'
-import { supabase, SUPABASE_URL } from './supabase'
+import { addVoter as _addVoter, buildWhatsAppShareUrl, castVote as _castVote, createPoll, type Poll } from './voting'
+import { supabase, APP_BASE_URL } from './supabase'
 import * as api from './api'
 import { KITCHEN_GROUPS, type KitchenTemplateItem } from './kitchenTemplate'
 import type { Dislike } from './api'
@@ -143,6 +148,24 @@ function Counter({ value, setValue, min = 1, max = 6 }: { value: number; setValu
     <button aria-label="Increase" onClick={() => setValue(Math.min(max, value + 1))}><Plus size={18} /></button>
   </div>
 }
+
+// Phase F: visual treatment for the 4 manual-dish sources. Keeps the
+// Today slot canvas and the picker modal in sync — same dot colour, same
+// source label, same meaning across the two surfaces.
+const SOURCE_COLOR: Record<api.ManualDishSource, string> = {
+  user_meal: '#5b8b6e',
+  household_meal: '#b07b3a',
+  curated: '#6e7d5b',
+  adhoc: '#9c8a64',
+}
+const SOURCE_LABEL: Record<api.ManualDishSource, string> = {
+  user_meal: 'Your recipe',
+  household_meal: 'Composed meal',
+  curated: 'Curated dish',
+  adhoc: 'Added now',
+}
+const sourceColor = (s: api.ManualDishSource): string => SOURCE_COLOR[s] ?? '#999'
+const sourceLabel = (s: api.ManualDishSource): string => SOURCE_LABEL[s] ?? s
 
 function speak(text: string, lang: string) {
   if (typeof window === 'undefined' || !('speechSynthesis' in window)) return
@@ -803,6 +826,11 @@ function App() {
   // dishes' ingredients are deducted from inventory and recorded in history.
   const [excludedDishes, setExcludedDishes] = useState<Set<string>>(new Set())
   const [showDishEditor, setShowDishEditor] = useState(false)
+  // Phase F: removed votesToday state. The voting tally was rendered as
+  // a badge on each meal card in the auto-suggested grid; with the grid
+  // gone there's nowhere to show it. The chat-driven voting intent path
+  // still writes votes server-side via api.castVote — it just doesn't
+  // surface a live tally on Today. Voting UI ships in a later phase.
   const [chatOpen, setChatOpen] = useState(false)
   const [chat, setChat] = useState<ChatTurn[]>([
     { from: 'bot', text: 'Namaste! Apni bhasha mein bolo — "मैं शाकाहारी हूँ", "৫ টা suggestion দাও", ya "we are 6 people". Main settings update kar dunga.' },
@@ -813,22 +841,43 @@ function App() {
   const [srSupported, setSrSupported] = useState(true)
   const recognitionRef = useRef<SpeechRecognition | null>(null)
   const [voting, setVoting] = useState<VotingState>(() => load('kya-voting', DEFAULT_VOTING))
-  const [newVoterName, setNewVoterName] = useState('')
-  const [activeVoter, setActiveVoter] = useState<string | null>(null)
   const [voterIndex, setVoterIndex] = useState<Record<string, string>>({})
   const [voters, setVoters] = useState<api.Voter[]>([])
-  const [votesToday, setVotesToday] = useState<Record<string, string>>({})
   const [voterPreferences, setVoterPreferences] = useState<api.VoterMealPreference[]>([])
   const [mealHistory, setMealHistory] = useState<api.MealHistoryRow[]>([])
   // User-authored meals: persisted in Supabase and merged into the Today
   // pool. Defaults to [] when not signed in (e.g., on the join screen).
   const [userMeals, setUserMeals] = useState<api.UserMeal[]>([])
+  // Phase E: composed meals (multiple dishes bundled by the user as one
+  // meal option). Hydrated on bootstrap, persisted in Supabase, cleared
+  // by resetHouseholdData on the server side.
+  const [householdMeals, setHouseholdMeals] = useState<api.HouseholdMeal[]>([])
   // Per-household overrides for the curated DISHES list (hide + edit).
   // Empty map means "use the curated DISHES as-is". Hydrated on bootstrap.
   const [dishOverrides, setDishOverrides] = useState<api.DishOverrideRow[]>([])
   // Day plan: 3 slots per day, each with an optional meal plan.
   const [mealPlansByDate, setMealPlansByDate] = useState<Record<string, api.MealPlan[]>>({})
   const [selectedSlot, setSelectedSlot] = useState<api.MealSlot>('DINNER')
+  // Phase F: dish picker modal state. When `addPickerOpen` is non-null,
+  // the modal is open for that slot. The picker shows your recipes,
+  // composed meals, curated dishes, and an ad-hoc "add a new dish" form.
+  const [addPickerOpen, setAddPickerOpen] = useState<api.MealSlot | null>(null)
+  const [addPickerSearch, setAddPickerSearch] = useState('')
+  const [addPickerTab, setAddPickerTab] = useState<'yours' | 'composed' | 'curated' | 'new'>('yours')
+  const [addPickerSelected, setAddPickerSelected] = useState<api.ManualDish[]>([])
+  const [addPickerAdhoc, setAddPickerAdhoc] = useState('')
+  const [addPickerSaving, setAddPickerSaving] = useState(false)
+
+  // Phase H: poll state. pollsBySlot[s] is the active poll for the slot
+  // (one per slot per day per household). tallyByPoll[pollId] is the
+  // {voterId → optionId} map; we keep it client-side so the slot card
+  // can render the running tally without re-querying Supabase on every
+  // render. createPollOpen is non-null when the modal is up to build a
+  // fresh poll.
+  const [pollsBySlot, setPollsBySlot] = useState<Record<string, api.MealPoll | null>>({})
+  const [tallyByPoll, setTallyByPoll] = useState<Record<string, Record<string, string>>>({})
+  const [createPollOpen, setCreatePollOpen] = useState<api.MealSlot | null>(null)
+  const [voterViewOpen, setVoterViewOpen] = useState(false)
   // First-time-user tutorial. Triggers when the user has completed onboarding
   // but hasn't confirmed a meal yet and hasn't dismissed the tour. Persisted
   // in localStorage so a refresh doesn't restart the tutorial. Three short
@@ -903,7 +952,7 @@ function App() {
         if (!hh.join_code) {
           api.generateAndSetJoinCode(hh).then((updated) => setHousehold(updated)).catch((e) => console.warn('Could not generate join code', e))
         }
-        const [inv, voters, votes, history, overrides, plans, voterPrefs, um, dishOv] = await Promise.all([
+        const [inv, voters, votes, history, overrides, plans, voterPrefs, um, dishOv, hm] = await Promise.all([
           api.fetchInventory(hh.id),
           api.fetchVoters(hh.id),
           api.fetchVotesToday(hh.id),
@@ -913,6 +962,7 @@ function App() {
           api.fetchHouseholdPreferences(hh.id),
           api.fetchUserMeals(hh.id),
           api.fetchDishOverrides(hh.id),
+          api.fetchHouseholdMeals(hh.id),
         ])
         if (cancelled) return
         setInventory(inv)
@@ -921,6 +971,7 @@ function App() {
         setVoters(voters)
         setUserMeals(um)
         setDishOverrides(dishOv)
+        setHouseholdMeals(hm)
         setCustomOrderItems({
           weekly: overrides.filter((o) => o.slot === 'weekly' && o.action === 'add').map((o) => ({ id: o.id, name: o.custom_name ?? '', quantity: o.custom_quantity ?? 0, unit: o.custom_unit ?? 'g' })),
           monthly: overrides.filter((o) => o.slot === 'monthly' && o.action === 'add').map((o) => ({ id: o.id, name: o.custom_name ?? '', quantity: o.custom_quantity ?? 0, unit: o.custom_unit ?? 'g' })),
@@ -945,13 +996,51 @@ function App() {
         setVoterIndex(idx)
         const vmap: Record<string, string> = {}
         votes.forEach((v) => { vmap[v.voter_id] = v.meal_id })
-        setVotesToday(vmap)
+        // Phase F: votes are fetched (above) for parity with the previous
+        // bootstrap shape; we no longer keep them in React state since the
+        // Today grid that rendered the tally is gone. The castVote RPC
+        // writes server-side; the family tab's voter list still drives the
+        // round-trip UI for the voting phase that ships later.
         setPreferences((p) => ({ ...p, familyName: hh.name, members: hh.members, vegetarian: hh.vegetarian, suggestionCount: hh.suggestion_count ?? p.suggestionCount, dishesPerMeal: hh.dishes_per_meal ?? p.dishesPerMeal, dislikes: hh.dislikes ?? p.dislikes }))
         setVoting((v) => ({ ...v, enabled: hh.voting_enabled }))
-      } catch (e) { console.error('Bootstrap failed:', e) }
-    })()
-    return () => { cancelled = true }
-  }, [session?.user?.id])
+        // Phase H: load today's polls and the live tally for each. We do
+        // this in the bootstrap (not a separate effect) so the slot canvas
+        // can render with the tally on first paint.
+        try {
+          const polls = await api.fetchPollsForDay(hh.id, todayKey)
+          const map: Record<string, api.MealPoll> = {}
+          const tally: Record<string, Record<string, string>> = {}
+          for (const p of polls) {
+            if (p.slot) map[p.slot] = p
+            try { tally[p.id] = await api.fetchPollTally(p.id) } catch {}
+          }
+          setPollsBySlot(map)
+          setTallyByPoll(tally)
+        } catch (e) { console.error('Poll bootstrap failed:', e) }
+        } catch (e) { console.error('Bootstrap failed:', e) }
+        })()
+        return () => { cancelled = true }
+        }, [session?.user?.id, household?.id])
+
+        // Phase H: realtime tally updates. Subscribe to votes for this
+        // household + today's date; refresh the per-poll tally on every
+        // change. The poll id is encoded in votes.meal_id as "poll-<id>:opt:…"
+        // so we re-fetch the affected poll's tally in full each insert.
+        useEffect(() => {
+        if (!household) return
+        const channel = supabase
+        .channel(`votes-${household.id}-${todayKey}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'votes', filter: `household_id=eq.${household.id}` }, async () => {
+          try {
+            const polls = await api.fetchPollsForDay(household.id, todayKey)
+            const tally: Record<string, Record<string, string>> = {}
+            for (const p of polls) { tally[p.id] = await api.fetchPollTally(p.id) }
+            setTallyByPoll(tally)
+          } catch (e) { console.error('Tally refresh failed:', e) }
+        })
+        .subscribe()
+        return () => { supabase.removeChannel(channel) }
+        }, [household?.id, todayKey])
 
   useEffect(() => localStorage.setItem('kya-preferences', JSON.stringify(preferences)), [preferences])
   useEffect(() => localStorage.setItem('kya-inventory', JSON.stringify(inventory)), [inventory])
@@ -997,31 +1086,19 @@ function App() {
 
   // Per-slot recommendations: tapping Breakfast / Lunch / Dinner now
   // yields genuinely different suggestions because recommendMeals
-  // filters the dish pool by slot tag.
+  // filters the dish pool by slot tag. Phase E composed meals are
+  // threaded as the 6th positional arg so the user's own multi-dish
+  // meals surface alongside the auto-bundled options.
   const mealOptions = useMemo(
-    () => recommendMeals(preferences, inventory, userMealsToDishes(userMeals), buildDishOverrideMap(dishOverrides), selectedSlot),
-    [preferences, inventory, userMeals, dishOverrides, selectedSlot]
+    () => recommendMeals(preferences, inventory, userMealsToDishes(userMeals), buildDishOverrideMap(dishOverrides), selectedSlot, householdMeals),
+    [preferences, inventory, userMeals, dishOverrides, selectedSlot, householdMeals]
   )
   const orders = useMemo(() => getOrderSuggestions(inventory), [inventory])
   const lowStock = orders.weekly.length + orders.monthly.length
-  const voteResult: PollResult = useMemo(() => {
-    const voters = Object.entries(voterIndex).map(([name, id]) => ({ name, code: id.slice(0, 5).toUpperCase() }))
-    const poll: Poll = { id: 'live', voters, votes: Object.fromEntries(Object.entries(votesToday).map(([id, mealId]) => [id, { mealId }])) }
-    return getResults(poll)
-  }, [voterIndex, votesToday])
-
-  const chooseMeal = (meal: MealOption) => {
-    setSelected(meal)
-    setConfirmed(null)
-    setExcludedDishes(new Set())  // reset exclusions on a new meal
-    // Optimistically upsert the plan for the current slot so the slot chip
-    // flips to 'Planned' immediately. The real upsert happens in confirm().
-    if (household) {
-      api.upsertMealPlan(household.id, todayKey, selectedSlot, meal.id, []).then((plan) => {
-        setMealPlansByDate((prev) => ({ ...prev, [todayKey]: [...(prev[todayKey] ?? []).filter((p) => p.slot !== selectedSlot), plan] }))
-      }).catch((e) => console.error('Plan upsert failed:', e))
-    }
-  }
+  // Phase F: removed chooseMeal. The Today page no longer auto-suggests
+  // meals from the engine — the user picks dishes themselves via the slot
+  // picker modal. The engine still drives chat intents and the "Suggest
+  // one for me" link on each empty slot (read-only, no selection state).
   const confirm = async () => {
     if (!selected) return
     const effectiveDishes = selected.dishes.filter((d) => !excludedDishes.has(d.id))
@@ -1070,7 +1147,6 @@ function App() {
     setConfirmed(null)
     setVoting(DEFAULT_VOTING)
     setVoterIndex({})
-    setVotesToday({})
   }
   const signOut = async () => { await supabase.auth.signOut() }
 
@@ -1156,7 +1232,9 @@ function App() {
       // can match user-authored recipes and respect per-household
       // curated-dish edits. The old call dropped both, so "dinner
       // should be Maggi" failed to find a user-authored recipe.
-      const recs = recommendMeals({ suggestionCount: 6, dishesPerMeal: 4, vegetarian: preferences.vegetarian }, inventory, userMealsToDishes(userMeals), buildDishOverrideMap(dishOverrides), intent.slot)
+      // Phase E: pass householdMeals as the 6th arg so chat suggestions
+      // also surface the user's composed meals.
+      const recs = recommendMeals({ suggestionCount: 6, dishesPerMeal: 4, vegetarian: preferences.vegetarian }, inventory, userMealsToDishes(userMeals), buildDishOverrideMap(dishOverrides), intent.slot, householdMeals)
       const matchMeal = recs.find((m) => m.dishes.some((d) => d.name.toLowerCase().includes(lc))) ?? recs[0]
       if (!matchMeal) return `Couldn't build a meal with ${intent.dishName}. Try a different dish name.`
       const matchedDish = matchMeal.dishes.find((d) => d.name.toLowerCase().includes(lc)) ?? matchMeal.dishes[0]
@@ -1253,22 +1331,6 @@ function App() {
       Object.keys(copy).forEach((k) => { if (copy[k] === id) delete copy[k] })
       return copy
     })
-    setVotesToday((m) => { const c = { ...m }; delete c[id]; return c })
-  }
-
-  const addVoterClick = async () => {
-    const v = await addVoterHandler(newVoterName)
-    if (v) setNewVoterName('')
-  }
-  const removeVoter = removeVoterHandler
-
-  const castVoteFor = async (voterId: string, mealId: string) => {
-    if (!household) return
-    setVotesToday((m) => ({ ...m, [voterId]: mealId }))
-    // B12 fix: surface vote-write failures. We keep the optimistic local
-    // state so the UI doesn't flicker, but alert so the user knows the
-    // server didn't record the vote (e.g. voter row was deleted).
-    try { await api.upsertVote(household.id, voterId, mealId) } catch (e) { console.error(e); alert('Could not record vote. The tally may be stale — refresh to retry.') }
   }
 
   const voteShareText = (name: string) => {
@@ -1278,8 +1340,8 @@ function App() {
     // ?household=<uuid> which the app ignored and the recipient
     // landed on Today without ever seeing the JoinScreen.
     const joinUrl = household?.join_code
-      ? `${SUPABASE_URL.slice(8)}/?join=${household.join_code}`
-      : `${SUPABASE_URL.slice(8)}/`
+      ? `${APP_BASE_URL}/?join=${household.join_code}`
+      : `${APP_BASE_URL}/`
     // B13 fix: the sender's household filter applies here, so a pure-veg
     // sender already shared a veg-only list. But a non-veg sender's
     // list contains non-veg options — the recipient's filter applies
@@ -1310,7 +1372,18 @@ function App() {
         // Strip the ?join= param from the URL so reload doesn't re-trigger the screen.
         window.history.replaceState({}, '', window.location.pathname)
         setPendingJoin(null)
-        alert(`You're now a voter in ${pendingJoin.household.name}. Open the app's Today tab on your device — but voting requires the owner to be on the same screen for now. A proper multi-device flow is coming next.`)
+        // Phase H: after joining, drop the voter straight into the ballot.
+        // We have to fetch polls here because the bootstrap already ran
+        // before they joined. Falls through if no polls exist yet (the
+        // dashboard greets them with "no polls open" copy).
+        try {
+          const polls = await api.fetchPollsForDay(pendingJoin.household.id, todayKey)
+          const map: Record<string, api.MealPoll> = {}
+          for (const p of polls) if (p.slot) map[p.slot] = p
+          setPollsBySlot(map)
+          setTallyByPoll({})
+        } catch {}
+        setVoterViewOpen(true)
       } catch (e) {
         console.error('Join failed:', e)
         alert('Could not join. The link may be expired or the household may have been deleted.')
@@ -1320,6 +1393,11 @@ function App() {
   if (!household || forceOnboarding) return <KitchenOnboarding session={session} forceOnboarding={forceOnboarding} currentSuggestionCount={preferences.suggestionCount} currentDishesPerMeal={preferences.dishesPerMeal} onComplete={(hh) => { setHousehold(hh); setForceOnboarding(false); setTab('today') }} />
 
   const voterList = Object.entries(voterIndex).map(([name, id]) => ({ name, id, code: id.slice(0, 5).toUpperCase() }))
+
+  // Owners can preview the voter experience to sanity-check the poll
+  // they just sent, even if they're alone. Sets voterViewOpen; the modal
+  // asks for a name (so it can stand in as a voter row).
+  const openVoterPreview = () => setVoterViewOpen(true)
 
   return <div className="app-shell">
     <header>
@@ -1334,124 +1412,410 @@ function App() {
     <main>
       {tab === 'today' && <>
         <section className="hero-copy">
-          <div><span className="eyebrow"><Sparkles size={14} /> {todayLabel}</span><h1>{greeting}</h1><p>Plan breakfast, lunch, and dinner for today. Tap a meal to choose it, or use the chat to set preferences.</p></div>
-          <div className="meal-controls">
-            <label><span>Options to show</span><Counter value={preferences.suggestionCount} setValue={(suggestionCount) => setPreferences({ ...preferences, suggestionCount })} /></label>
-            <label><span>Dishes per meal</span><Counter value={preferences.dishesPerMeal} setValue={(dishesPerMeal) => setPreferences({ ...preferences, dishesPerMeal })} /></label>
+          <div><span className="eyebrow"><Sparkles size={14} /> {todayLabel}</span><h1>{greeting}</h1><p>Pick a meal, or build your own from the dishes you have.</p></div>
+          <div className="hero-actions">
+            {Object.values(pollsBySlot).some(Boolean) && <button
+              className="ghost small"
+              onClick={openVoterPreview}
+              aria-label="Open voter view"
+              title="Preview the voter dashboard"
+            ><Vote size={14} /> Open voter view</button>}
           </div>
         </section>
-
-        <div className="veg-mode-pill" data-veg={preferences.vegetarian}>
-          <Leaf size={16} />
-          <span><b>{preferences.vegetarian ? 'Pure vegetarian' : 'Veg + non-veg'}</b><small>Tap to switch — suggestions update instantly</small></span>
-          <button
-            className={`veg-toggle ${preferences.vegetarian ? 'on' : 'off'}`}
-            onClick={() => setPreferences((p) => ({ ...p, vegetarian: !p.vegetarian }))}
-            aria-label="Toggle vegetarian mode"
-            aria-pressed={preferences.vegetarian}
-          >
-            <span className="veg-toggle-knob" />
-          </button>
-        </div>
 
         <div className="slot-selector">
           {(['BREAKFAST', 'LUNCH', 'DINNER'] as const).map((s) => {
             const plan = mealPlansByDate[todayKey]?.find((p) => p.slot === s)
-            return <button key={s} className={`slot-chip ${selectedSlot === s ? 'active' : ''} ${plan?.meal_id ? 'has-plan' : ''} ${plan?.confirmed_at ? 'confirmed' : ''}`} onClick={() => { setSelectedSlot(s); setSelected(null) }}>
-              <span className="slot-label">{s === 'BREAKFAST' ? 'Breakfast' : s === 'LUNCH' ? 'Lunch' : 'Dinner'}</span>
-              {plan?.meal_id && <span className="slot-tag">Planned</span>}
-              {plan?.confirmed_at && <span className="slot-tag done">Done</span>}
-            </button>
+            const hasPicks = (plan?.manual_dishes?.length ?? 0) > 0 || !!plan?.meal_id
+            return <div key={s} className="slot-chip-wrap">
+              <button className={`slot-chip ${selectedSlot === s ? 'active' : ''} ${hasPicks ? 'has-plan' : ''} ${plan?.confirmed_at ? 'confirmed' : ''}`} onClick={() => { setSelectedSlot(s); setSelected(null) }}>
+                <span className="slot-label">{s === 'BREAKFAST' ? 'Breakfast' : s === 'LUNCH' ? 'Lunch' : 'Dinner'}</span>
+                {hasPicks && <span className="slot-tag">Planned</span>}
+                {plan?.confirmed_at && <span className="slot-tag done">Done</span>}
+              </button>
+              {voting.enabled && voterList.length > 0 && <button
+                className="slot-share"
+                aria-label={`Share ${s.toLowerCase()} voting link`}
+                onClick={() => shareOnWhatsApp(voteShareText(voterList[0]?.name ?? ''))}
+              >
+                <Share2 size={13} />
+              </button>}
+              <button
+                className="slot-add"
+                aria-label={`Add a dish to ${s.toLowerCase()}`}
+                onClick={() => {
+                  setSelectedSlot(s)
+                  // Pre-load the picker with whatever's already planned for
+                  // this slot so the user can add more rather than restart.
+                  const existing = mealPlansByDate[todayKey]?.find((p) => p.slot === s)
+                  setAddPickerSelected(existing?.manual_dishes ?? [])
+                  setAddPickerSearch('')
+                  setAddPickerTab('yours')
+                  setAddPickerAdhoc('')
+                  setAddPickerOpen(s)
+                }}
+              >
+                <Plus size={13} /> Add
+              </button>
+            </div>
           })}
         </div>
 
-        {voting.enabled && <section className="vote-panel">
-          <div className="vote-head">
-            <div><span className="eyebrow"><Vote size={14} /> FAMILY VOTE</span><h2>Sab ki pasand, transparent</h2><p>Add the people at home, share a link each, and watch the tally update live.</p></div>
-            <div className="vote-summary">
-              <div><b>{voteResult.castCount}</b><small>voted</small></div>
-              <div><b>{voteResult.totalVoters - voteResult.castCount}</b><small>pending</small></div>
-              <div><b>{voteResult.totalVoters}</b><small>voters</small></div>
-            </div>
-          </div>
-          <div className="voter-chips">
-            {voterList.length === 0 && <span className="voter-empty">Add at least one family member to start voting.</span>}
-            {voterList.map((voter) => {
-              const mealId = votesToday[voter.id]
-              return <div key={voter.id} className={`voter-chip ${mealId ? 'voted' : 'pending'}`}>
-                <div><b>{voter.name}</b><small>{mealId ? `picked ${mealOptions.find((m) => m.id === mealId)?.title ?? mealId}` : 'waiting…'}</small></div>
-                <div className="voter-actions">
-                  <button onClick={() => shareOnWhatsApp(voteShareText(voter.name))} aria-label="Share link"><Share2 size={14} /></button>
-                  <button onClick={() => setActiveVoter(voter.id)} aria-label="Vote"><Vote size={14} /></button>
-                  <button onClick={() => removeVoter(voter.id)} aria-label="Remove"><X size={14} /></button>
+        <section className="slot-canvas">
+          {(['BREAKFAST', 'LUNCH', 'DINNER'] as const).map((s) => {
+            const plan = mealPlansByDate[todayKey]?.find((p) => p.slot === s)
+            const picks = plan?.manual_dishes ?? []
+            const poll = pollsBySlot[s] ?? null
+            const tally = poll ? (tallyByPoll[poll.id] ?? {}) : {}
+            const votesCast = Object.keys(tally).length
+            const voterCount = voters.length
+            // Engine-suggested fallback for the "Suggest one" button. Only
+            // surfaces a single dish — the user is in charge, the engine
+            // just nudges when they're stuck.
+            const suggested = picks.length === 0 && mealOptions.length > 0 ? mealOptions[0].dishes[0] : null
+            const slotNoun = s === 'BREAKFAST' ? "Today's breakfast" : s === 'LUNCH' ? "Today's lunch" : "Tonight's dinner"
+            return <article className={`slot-canvas-card ${selectedSlot === s ? 'active' : ''} ${plan?.confirmed_at ? 'confirmed' : ''} ${poll ? 'has-poll' : ''}`} key={s}>
+              <header>
+                <div>
+                  <span className="eyebrow">{s}</span>
+                  <h3>{slotNoun}</h3>
                 </div>
-                <code>{voter.code}</code>
-              </div>
-            })}
-          </div>
-          <div className="voter-add">
-            <input value={newVoterName} onChange={(e) => setNewVoterName(e.target.value)} placeholder="Add a family member (e.g. Diya)" onKeyDown={(e) => e.key === 'Enter' && addVoterClick()} />
-            <button onClick={addVoterClick} className="primary mini"><Plus size={16} /> Add</button>
-            {voterList.length > 0 && <button onClick={() => shareOnWhatsApp(voteShareText(voterList[0].name))} className="secondary mini"><Share2 size={16} /> Share</button>}
-          </div>
-          {activeVoter && <div className="voter-choices">
-            <div className="voter-choices-head">
-              <span><b>Pick for {voterList.find((v) => v.id === activeVoter)?.name}</b><small>Tap to record the vote</small></span>
-              <button onClick={() => setActiveVoter(null)} aria-label="Close"><X size={16} /></button>
-            </div>
-            <div className="voter-choices-list">
-              {mealOptions.map((m, i) => {
-                const count = voteResult.tallies[m.id] ?? 0
-                return <button key={m.id} className="voter-choice" onClick={() => { castVoteFor(activeVoter, m.id); setActiveVoter(null) }}>
-                  <span className="vote-num">0{i + 1}</span>
-                  <span><b>{m.title}</b><small>{m.dishes.map((d) => d.name).join(' + ')}</small></span>
-                  <strong>{count}</strong>
-                </button>
-              })}
-            </div>
-          </div>}
-          {voteResult.castCount > 0 && <div className="vote-tally">
-            <div className="vote-tally-head">
-              <span><b>Live tally</b><small>Transparent — everyone's vote is visible</small></span>
-              <button onClick={() => setVoting((v) => ({ ...v, shareAll: !v.shareAll }))} className="reset-button mini">{voting.shareAll ? <><EyeOff size={14} /> Hide picks</> : <><Eye size={14} /> Show picks</>}</button>
-            </div>
-            <ul>
-              {mealOptions.map((m, i) => {
-                const count = voteResult.tallies[m.id] ?? 0
-                const pct = voteResult.castCount ? Math.round((count / voteResult.castCount) * 100) : 0
-                const names = voting.shareAll ? voteResult.perVoter.filter((pv) => pv.mealId === m.id).map((pv) => pv.name) : []
-                return <li key={m.id}>
-                  <span className="vote-num">0{i + 1}</span>
-                  <div className="vote-bar"><i style={{ width: `${pct}%` }} /><span><b>{m.title}</b><small>{names.length ? names.join(', ') : 'no votes yet'}</small></span></div>
-                  <strong>{count}</strong>
-                </li>
-              })}
-            </ul>
-            {voteResult.winner && <div className="vote-winner"><Check size={18} /><span><small>Leading meal</small><b>{mealOptions.find((m) => m.id === voteResult.winner)?.title}</b></span></div>}
-          </div>}
-        </section>}
-
-        <section className="meal-grid">
-          {mealOptions.map((meal, index) => {
-            const count = voteResult.tallies[meal.id] ?? 0
-            return <article className={`meal-card ${selected?.id === meal.id ? 'selected' : ''} ${voteResult.winner === meal.id ? 'winner' : ''}`} key={meal.id}>
-              <button className="meal-select" onClick={() => chooseMeal(meal)} aria-label={`Choose ${meal.title}`}>
-                <div className="meal-art" style={{ '--meal-color': meal.dishes[0].color } as React.CSSProperties}>
-                  <span className="option-index">0{index + 1}</span>
-                  <div className="plate"><div className="food-shape" /><div className="garnish">✦</div></div>
-                  {meal.match >= 80 && <span className="match-badge"><Check size={14} /> {meal.match}% pantry match</span>}
-                  {voting.enabled && count > 0 && <span className="vote-badge"><Vote size={13} /> {count}</span>}
+                <div className="slot-canvas-actions">
+                  {voting.enabled && voterCount > 0 && picks.length > 0 && !plan?.confirmed_at && !poll && <button
+                    className="ghost small"
+                    aria-label={`Send ${s.toLowerCase()} for voting`}
+                    onClick={() => setCreatePollOpen(s)}
+                  ><Vote size={14} /> Send for voting</button>}
+                  {poll && !poll.closed_at && <button
+                    className="ghost small"
+                    aria-label={`Open poll for ${s.toLowerCase()}`}
+                    onClick={() => setCreatePollOpen(s)}
+                  ><Vote size={14} /> Poll live</button>}
+                  {poll && !poll.closed_at && <button
+                    className="ghost small"
+                    aria-label={`Stop voting for ${s.toLowerCase()}`}
+                    onClick={async () => {
+                      if (!window.confirm(`Stop voting for ${s.toLowerCase()}? Voters won't be able to cast new votes, but existing results stay visible.`)) return
+                      try {
+                        await api.closePoll(poll.id)
+                        setPollsBySlot((prev) => ({ ...prev, [s]: { ...poll, closed_at: new Date().toISOString() } }))
+                      } catch (e) { console.error('closePoll failed', e); alert('Could not stop voting. Try again.') }
+                    }}
+                  ><X size={14} /> Stop voting</button>}
+                  {poll && poll.closed_at && <span className="slot-tag done">Voting closed</span>}
+                  {poll && <button
+                    className="ghost small danger"
+                    aria-label={`Delete poll for ${s.toLowerCase()}`}
+                    onClick={async () => {
+                      if (!window.confirm(`Delete the ${s.toLowerCase()} poll entirely? This removes the poll and all votes.`)) return
+                      try {
+                        await api.deletePoll(poll.id)
+                        setPollsBySlot((prev) => ({ ...prev, [s]: null }))
+                        setTallyByPoll((prev) => { const { [poll.id]: _, ...rest } = prev; return rest })
+                      } catch (e) { console.error('deletePoll failed', e); alert('Could not delete poll. Try again.') }
+                    }}
+                  ><Trash2 size={14} /> Delete</button>}
                 </div>
-                <div className="meal-body">
-                  <div className="meal-meta"><span><Clock3 size={15} /> {meal.totalTime} min</span><span>{meal.dishes.length} dishes</span></div>
-                  <h2>{meal.title}</h2><p>{meal.note}</p>
-                  <ul>{meal.dishes.map((dish) => <li key={`${meal.id}-${dish.id}`}><span className="dish-dot" style={{ background: dish.color }} /> <span><b>{dish.name}</b><small>{dish.description}</small></span></li>)}</ul>
-                  <span className="choose-cta">{selected?.id === meal.id ? <><Check size={17} /> Selected</> : <>Choose this meal <ChevronRight size={17} /></>}</span>
+              </header>
+              {poll && <div className="slot-tally">
+                <div className="slot-tally-header">
+                  <span className="eyebrow">VOTING</span>
+                  <span className="slot-tally-count">{votesCast} / {voterCount || '–'} voted</span>
                 </div>
-              </button>
+                <ul className="slot-tally-bars">
+                  {poll.options.map((opt) => {
+                    const count = Object.values(tally).filter((o) => o === opt.id).length
+                    const totalCast = votesCast || 1
+                    const pct = Math.round((count / totalCast) * 100)
+                    const winning = count > 0 && count === Math.max(...poll.options.map((o) => Object.values(tally).filter((v) => v === o.id).length))
+                    return <li key={opt.id} className={`slot-tally-bar ${winning ? 'winning' : ''}`}>
+                      <span className="slot-tally-bar-title"><b>{opt.title}</b><small>{opt.dishes.map((d) => d.name).join(' + ')}</small></span>
+                      <span className="slot-tally-bar-meter"><i style={{ width: `${pct}%` }} /></span>
+                      <span className="slot-tally-bar-count">{count}</span>
+                    </li>
+                  })}
+                </ul>
+              </div>}
+              {picks.length === 0 ? (
+                <div className="slot-empty">
+                  <p>Empty. Tap <b>+ Add</b> above to pick a dish.</p>
+                  {suggested && <button
+                    className="link-button suggest-one"
+                    onClick={async () => {
+                      if (!household) return
+                      try {
+                        const newPick: api.ManualDish = { dish_id: suggested.id, name: suggested.name, source: 'curated' }
+                        const updated = await api.setMealPlanManualDishes(household.id, todayKey, s, [newPick])
+                        setMealPlansByDate((prev) => ({
+                          ...prev,
+                          [todayKey]: [...(prev[todayKey] ?? []).filter((p) => p.slot !== s), updated],
+                        }))
+                      } catch (e) { console.error('Suggest-one write failed:', e) }
+                    }}
+                  ><Sparkles size={14} /> Suggest one for me ({suggested.name})</button>}
+                </div>
+              ) : (
+                <ul className="slot-dishes">
+                  {picks.map((d, idx) => <li key={`${d.dish_id ?? d.name}-${idx}`} className={`slot-dish ${d.source}`}>
+                    <span className="dish-dot" style={{ background: sourceColor(d.source) }} />
+                    <span className="dish-text"><b>{d.name}</b><small>{sourceLabel(d.source)}</small></span>
+                    <button
+                      className="slot-dish-remove"
+                      aria-label={`Remove ${d.name}`}
+                      onClick={async () => {
+                        if (!household) return
+                        const next = picks.filter((_, i) => i !== idx)
+                        try {
+                          if (next.length === 0) {
+                            // Empty slot — write a row with empty manual_dishes
+                            // so the slot still renders consistently. The
+                            // CHECK constraint allows '[]' as a passthrough.
+                            const updated = await api.setMealPlanManualDishes(household.id, todayKey, s, [])
+                            setMealPlansByDate((prev) => ({
+                              ...prev,
+                              [todayKey]: [...(prev[todayKey] ?? []).filter((p) => p.slot !== s), updated],
+                            }))
+                          } else {
+                            const updated = await api.setMealPlanManualDishes(household.id, todayKey, s, next)
+                            setMealPlansByDate((prev) => ({
+                              ...prev,
+                              [todayKey]: [...(prev[todayKey] ?? []).filter((p) => p.slot !== s), updated],
+                            }))
+                          }
+                        } catch (e) { console.error('Remove pick failed:', e) }
+                      }}
+                    ><X size={14} /></button>
+                  </li>)}
+                </ul>
+              )}
+              <footer>
+                <button
+                  className="ghost small slot-add-inline"
+                  onClick={() => {
+                    setSelectedSlot(s)
+                    setAddPickerSelected(picks)
+                    setAddPickerSearch('')
+                    setAddPickerTab('yours')
+                    setAddPickerAdhoc('')
+                    setAddPickerOpen(s)
+                  }}
+                ><Plus size={14} /> {picks.length === 0 ? 'Add a dish' : 'Add another dish'}</button>
+                {picks.length > 0 && !plan?.confirmed_at && (poll && !poll.closed_at ? (
+                  <button
+                    className="primary small slot-finalise-inline"
+                    onClick={async () => {
+                      if (!household || !poll) return
+                      try {
+                        await api.closePoll(poll.id)
+                        // Refresh local poll state.
+                        setPollsBySlot((prev) => ({ ...prev, [s]: { ...poll, closed_at: new Date().toISOString() } }))
+                        // Tally the votes on the server side and pick the
+                        // highest-count option. Ties go to the first option
+                        // — we won't auto-finalise on tie, surface toast.
+                        if (votesCast === 0) { alert('No votes yet — give the family a moment.'); return }
+                        const counts = poll.options.map((opt) => ({
+                          opt,
+                          count: Object.values(tally).filter((o) => o === opt.id).length,
+                        }))
+                        const max = Math.max(...counts.map((c) => c.count))
+                        const winners = counts.filter((c) => c.count === max)
+                        if (winners.length > 1) { alert(`It's a tie between ${winners.length} options. Pick the winner manually below.`); return }
+                        const winner = winners[0].opt
+                        // Adopt winner dishes as the slot's manual_dishes.
+                        const updated = await api.setMealPlanManualDishes(household.id, todayKey, s, winner.dishes)
+                        setMealPlansByDate((prev) => ({
+                          ...prev,
+                          [todayKey]: [...(prev[todayKey] ?? []).filter((p) => p.slot !== s), updated],
+                        }))
+                      } catch (e) { console.error('Finalise failed:', e); alert('Could not finalise. Try again.') }
+                    }}
+                  ><Check size={14} /> Finalise winner</button>
+                ) : (
+                  <button
+                    className="primary small slot-confirm-inline"
+                    onClick={async () => {
+                      if (!household) return
+                      const confirmedAt = new Date().toISOString()
+                      try {
+                        await api.confirmMealPlan(household.id, todayKey, s)
+                        // Phase G: inventory deduction. Resolve picks →
+                        // IngredientUse[] via engine, run confirmMeal() to
+                        // get the deducted inventory, persist each row's
+                        // new quantity, and surface a toast for ad-hoc
+                        // picks we couldn't deduct (no ingredient info).
+                        const resolved = mealEngine.resolvePicksToUses(
+                          picks,
+                          DISHES,
+                          userMeals,
+                          householdMeals,
+                        )
+                        if (resolved.uses.length > 0) {
+                          const nextInventory = mealEngine.confirmMeal(inventory, resolved.uses)
+                          setInventory(nextInventory)
+                          // Persist only the rows whose qty actually changed
+                          // (filter the unchanged rows to skip noisy writes).
+                          const changed = nextInventory.filter((n) => {
+                            const orig = inventory.find((o) => o.id === n.id)
+                            return orig && orig.quantity !== n.quantity
+                          })
+                          await Promise.all(changed.map((it) => api.updateInventoryItem(it.id, it.quantity)))
+                        }
+                        if (resolved.skipped.length > 0) {
+                          // Phase G limitation: ad-hoc picks carry no
+                          // ingredients, so we can't auto-decrement. Tell
+                          // the user which dishes need manual inventory.
+                          const names = resolved.skipped.map((d) => d.name).join(', ')
+                          alert(`We couldn't update your pantry for ad-hoc dishes (${names}) — please adjust manually.`)
+                        }
+                        if (resolved.unresolved.length > 0) {
+                          const names = resolved.unresolved.map((d) => d.name).join(', ')
+                          alert(`Source row missing for: ${names}. Remove and re-pick.`)
+                        }
+                        // meal_history doesn't carry slot/plan_date; encode
+                        // the slot into the synthesised meal_id so the
+                        // family tab can resolve what was cooked.
+                        const syntheticMealId = `manual:${s.toLowerCase()}:${todayKey}`
+                        try {
+                          await api.recordManualMeal(household.id, syntheticMealId, picks)
+                        } catch (e) { console.error('recordManualMeal failed (slot still marked confirmed):', e) }
+                        setMealPlansByDate((prev) => {
+                          const existing = prev[todayKey] ?? []
+                          return { ...prev, [todayKey]: existing.map((p) => p.slot === s ? { ...p, confirmed_at: confirmedAt } : p) }
+                        })
+                        const historyRow = {
+                          household_id: household.id,
+                          slot: s,
+                          plan_date: todayKey,
+                          dishes: picks.map((d) => ({ id: d.dish_id, name: d.name })),
+                          confirmed_at: confirmedAt,
+                        } as any
+                        setMealHistory((prev) => [historyRow, ...prev])
+                      } catch (e) { console.error('Confirm failed:', e) }
+                    }}
+                  ><Check size={14} /> Confirm meal</button>
+                ))}
+                {plan?.confirmed_at && <span className="slot-confirmed-tag"><Check size={14} /> Confirmed</span>}
+              </footer>
             </article>
           })}
         </section>
+
+        {addPickerOpen && household && <AddDishModal
+          slot={addPickerOpen}
+          slotLabel={addPickerOpen === 'BREAKFAST' ? 'breakfast' : addPickerOpen === 'LUNCH' ? 'lunch' : 'dinner'}
+          userMeals={userMeals}
+          householdMeals={householdMeals}
+          inventory={inventory}
+          preferences={preferences}
+          selected={addPickerSelected}
+          onChangeSelected={setAddPickerSelected}
+          search={addPickerSearch}
+          onChangeSearch={setAddPickerSearch}
+          tab={addPickerTab}
+          onChangeTab={setAddPickerTab}
+          adhoc={addPickerAdhoc}
+          onChangeAdhoc={setAddPickerAdhoc}
+          saving={addPickerSaving}
+          onClose={() => setAddPickerOpen(null)}
+          onSave={async (nextPicks) => {
+            const targetSlot = addPickerOpen
+            setAddPickerSaving(true)
+            try {
+              const updated = await api.setMealPlanManualDishes(household.id, todayKey, targetSlot, nextPicks)
+              setMealPlansByDate((prev) => ({
+                ...prev,
+                [todayKey]: [...(prev[todayKey] ?? []).filter((p) => p.slot !== targetSlot), updated],
+              }))
+              setAddPickerOpen(null)
+              // Defensive reload — guarantee the canonical DB state replaces
+              // whatever's in React memory. Avoids the "added Aloo Poori to
+              // dinner but it's also showing on lunch" stale-state class.
+              try {
+                const fresh = await api.fetchMealPlansForDay(household.id, todayKey)
+                setMealPlansByDate((prev) => ({ ...prev, [todayKey]: fresh }))
+              } catch (e) { console.warn('Post-save reload failed:', e) }
+            } catch (e) {
+              console.error('Picker save failed:', e)
+              alert('Could not save your picks. Try again.')
+            } finally { setAddPickerSaving(false) }
+          }}
+          onPromoteCuratedToRecipe={async ({ name, time, vegetarian, color }) => {
+            // "Quick-add to your recipes" — write the curated dish to
+            // user_meals so it's available under Your recipes next time.
+            try {
+              const created = await api.addUserMeal(household.id, {
+                name,
+                description: `From curated — promoted ${new Date().toLocaleDateString('en-IN')}`,
+                time,
+                vegetarian,
+                kind: 'main',
+                color,
+                ingredients: [],
+                sort_order: 0,
+              })
+              setUserMeals((prev) => [...prev, created])
+            } catch (e) {
+              console.error('Promote failed:', e)
+              alert('Could not add to your recipes.')
+            }
+          }}
+        />}
+
+        {createPollOpen && household && <CreatePollModal
+          slot={createPollOpen}
+          slotLabel={createPollOpen === 'BREAKFAST' ? 'breakfast' : createPollOpen === 'LUNCH' ? 'lunch' : 'dinner'}
+          picks={mealPlansByDate[todayKey]?.find((p) => p.slot === createPollOpen)?.manual_dishes ?? []}
+          votersCount={voters.length}
+          joiningUrl={`${APP_BASE_URL}/?join=${household.join_code ?? ''}`}
+          shareText={(() => {
+            const slotLabel = createPollOpen === 'BREAKFAST' ? 'breakfast' : createPollOpen === 'LUNCH' ? 'lunch' : 'dinner'
+            return `🗳 Vote on today's ${slotLabel}!\n\nOpen: ${APP_BASE_URL}/?join=${household.join_code}\nPick your favourite option once you open it.`
+          })()}
+          userMeals={userMeals}
+          householdMeals={householdMeals}
+          inventory={inventory}
+          preferences={preferences}
+          onShare={(text) => shareOnWhatsApp(text)}
+          onClose={() => setCreatePollOpen(null)}
+          onSave={async (options) => {
+            try {
+              const saved = await api.upsertPoll(household.id, todayKey, createPollOpen, options)
+              setPollsBySlot((prev) => ({ ...prev, [createPollOpen]: saved }))
+              setCreatePollOpen(null)
+            } catch (e) { console.error('upsertPoll failed:', e); alert('Could not save poll. Try again.') }
+          }}
+          onPromoteCuratedToRecipe={async ({ name, time, vegetarian, color }) => {
+            // Mirror of the Today-picker promote action: write the curated dish
+            // to user_meals so it shows up under Your recipes next time.
+            try {
+              const created = await api.addUserMeal(household.id, {
+                name,
+                description: `From curated — promoted ${new Date().toLocaleDateString('en-IN')}`,
+                time,
+                vegetarian,
+                kind: 'main',
+                color,
+                ingredients: [],
+                sort_order: 0,
+              })
+              setUserMeals((prev) => [...prev, created])
+            } catch (e) {
+              console.error('Promote failed:', e)
+              alert('Could not add to your recipes.')
+            }
+          }}
+        />}
+
+        {voterViewOpen && household && <VoterDashboard
+          householdId={household.id}
+          householdName={preferences.familyName}
+          joinCode={household.join_code ?? ''}
+          pollsBySlot={pollsBySlot}
+          tallyByPoll={tallyByPoll}
+          todayKey={todayKey}
+          onClose={() => setVoterViewOpen(false)}
+        />}
+
 
         {tab === 'today' && <DislikesSection
           dislikes={preferences.dislikes}
@@ -1616,8 +1980,11 @@ function App() {
         <div className="settings-card">
           <label className="text-field"><span>Household name</span><input value={preferences.familyName} onChange={(e) => setPreferences({ ...preferences, familyName: e.target.value })} /></label>
           <div className="setting-row"><span><b>Family members</b><small>Used to size ingredient quantities</small></span><Counter value={preferences.members} setValue={(members) => setPreferences({ ...preferences, members })} max={12} /></div>
-          <div className="setting-row"><span><b>Meal suggestions</b><small>How many options the family sees</small></span><Counter value={preferences.suggestionCount} setValue={(suggestionCount) => setPreferences({ ...preferences, suggestionCount })} /></div>
-          <div className="setting-row"><span><b>Dishes per meal</b><small>Main, side, bread or rice</small></span><Counter value={preferences.dishesPerMeal} setValue={(dishesPerMeal) => setPreferences({ ...preferences, dishesPerMeal })} /></div>
+          {/* Phase F: the "Meal suggestions" and "Dishes per meal" steppers
+              used to drive the auto-suggested meal-grid on Today. That grid
+              is gone — the user picks dishes themselves. The engine still
+              reads these as defaults for the chat intent path, so we keep
+              the state but hide the rows from the Rules UI. */}
           <label className="setting-row toggle-row"><span><b>Pure vegetarian household</b><small>Never suggest eggs or meat</small></span><input type="checkbox" checked={preferences.vegetarian} onChange={(e) => setPreferences({ ...preferences, vegetarian: e.target.checked })} /></label>
           <label className="setting-row toggle-row"><span><b>Family voting</b><small>Let everyone pick a meal — transparent tally</small></span><input type="checkbox" checked={voting.enabled} onChange={(e) => setVoting((v) => ({ ...v, enabled: e.target.checked }))} /></label>
           {preferences.dislikes.length > 0 && <div className="setting-row"><span><b>Never suggest</b><small>Set by you or the assistant</small></span><div className="dislike-tags">{preferences.dislikes.map((d, i) => <span className="tag" key={`${d.name}-${i}`}>{d.name}{d.slot && <em className="dislike-slot-pill"> · {d.slot.toLowerCase()}</em>}<button onClick={() => setPreferences((p) => ({ ...p, dislikes: p.dislikes.filter((_, j) => j !== i) }))} aria-label={`Remove ${d.name}`}><X size={12} /></button></span>)}</div></div>}
@@ -1634,12 +2001,12 @@ function App() {
             setInventory([])
             setVoters([])
             setVoterIndex({})
-            setVotesToday({})
             setUserMeals([])
             setDishOverrides([])
             setMealHistory([])
             setMealPlansByDate({})
             setVoterPreferences([])
+            setHouseholdMeals([])
             setForceOnboarding(true)
           }}><Sparkles size={17} /> Re-run pantry setup</button>
           <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #eee7dc' }}>
@@ -1655,12 +2022,12 @@ function App() {
                 setInventory([])
                 setVoters([])
                 setVoterIndex({})
-                setVotesToday({})
                 setUserMeals([])
                 setDishOverrides([])
                 setMealHistory([])
                 setMealPlansByDate({})
                 setVoterPreferences([])
+                setHouseholdMeals([])
                 alert('Wiped. Reload to see a clean state, or use Re-run pantry setup to start over.')
               } catch (e) { console.error(e); alert('Could not wipe. Try again.') }
             }}><Trash2 size={17} /> Delete all my data</button>
@@ -1670,6 +2037,7 @@ function App() {
 
       {tab === 'recipes' && household && <RecipesTab
         userMeals={userMeals}
+        householdMeals={householdMeals}
         inventory={inventory}
         dishOverrides={dishOverrides}
         onCreate={async (meal) => {
@@ -1714,6 +2082,24 @@ function App() {
         onResetCurated={async (dishId) => {
           await api.deleteDishOverride(household.id, dishId)
           setDishOverrides((prev) => prev.filter((o) => o.dish_id !== dishId))
+        }}
+        onCreateComposed={async (meal) => {
+          try {
+            const created = await api.addHouseholdMeal(household.id, meal)
+            setHouseholdMeals((prev) => [created, ...prev])
+            return created
+          } catch (e) { console.error(e); return null }
+        }}
+        onUpdateComposed={async (id, patch) => {
+          try {
+            const updated = await api.updateHouseholdMeal(id, patch)
+            setHouseholdMeals((prev) => prev.map((m) => m.id === id ? updated : m))
+            return updated
+          } catch (e) { console.error(e); return null }
+        }}
+        onDeleteComposed={async (id) => {
+          await api.deleteHouseholdMeal(id)
+          setHouseholdMeals((prev) => prev.filter((m) => m.id !== id))
         }}
       />}
     </main>
@@ -1905,6 +2291,27 @@ const emptyRecipeDraft = (): RecipeDraft => ({
   ingredients: [],
 })
 
+// ============================================================================
+// Phase E: composed meals
+// ============================================================================
+
+type ComposedMealDraft = {
+  name: string
+  description: string
+  slot: api.MealSlot | null
+  // The dishes the user picked. Each is `{id, name}` — id is the seed DISH
+  // id (or 'user-...' for user-authored recipes, which the engine resolves
+  // against DISHES + userMealsToDishes). Min 1, max 8 (display-friendly).
+  dishIds: string[]
+}
+
+const emptyComposedDraft = (): ComposedMealDraft => ({
+  name: '',
+  description: '',
+  slot: null,
+  dishIds: [],
+})
+
 function RecipeEditor({
   inventory,
   draft,
@@ -1997,6 +2404,7 @@ function RecipeEditor({
 
 function RecipesTab({
   userMeals,
+  householdMeals,
   inventory,
   dishOverrides,
   onCreate,
@@ -2006,8 +2414,12 @@ function RecipesTab({
   onEditCurated,
   onUnhideCurated,
   onResetCurated,
+  onCreateComposed,
+  onUpdateComposed,
+  onDeleteComposed,
 }: {
   userMeals: api.UserMeal[]
+  householdMeals: api.HouseholdMeal[]
   inventory: InventoryItem[]
   dishOverrides: api.DishOverrideRow[]
   onCreate: (meal: Omit<api.UserMeal, 'id' | 'household_id' | 'created_at' | 'updated_at'>) => Promise<api.UserMeal | null>
@@ -2017,12 +2429,25 @@ function RecipesTab({
   onEditCurated: (dishId: string, override: Dish) => Promise<void>
   onUnhideCurated: (dishId: string) => Promise<void>
   onResetCurated: (dishId: string) => Promise<void>
+  onCreateComposed: (meal: Omit<api.HouseholdMeal, 'id' | 'household_id' | 'created_at' | 'updated_at'>) => Promise<api.HouseholdMeal | null>
+  onUpdateComposed: (id: string, patch: Partial<Omit<api.HouseholdMeal, 'id' | 'household_id' | 'created_at'>>) => Promise<api.HouseholdMeal | null>
+  onDeleteComposed: (id: string) => Promise<void>
 }) {
   const [editing, setEditing] = useState<{ mode: 'create' } | { mode: 'edit'; id: string } | null>(null)
   const [editingCurated, setEditingCurated] = useState<Dish | null>(null)
   const [draft, setDraft] = useState<RecipeDraft>(emptyRecipeDraft())
   const [saving, setSaving] = useState(false)
-  const [tab, setCuratedTab] = useState<'yours' | 'curated'>('yours')
+  const [tab, setCuratedTab] = useState<'yours' | 'composed' | 'curated'>('yours')
+
+  // Phase E composed-meal editor state. Same shape as RecipesTab's
+  // editing flag (mode+id) so the editor renders in-place when open.
+  const [composedEditing, setComposedEditing] = useState<
+    | { mode: 'create' }
+    | { mode: 'edit'; meal: api.HouseholdMeal }
+    | null
+  >(null)
+  const [composedDraft, setComposedDraft] = useState<ComposedMealDraft>(emptyComposedDraft())
+  const [composedSaving, setComposedSaving] = useState(false)
 
   const startCreate = () => { setDraft(emptyRecipeDraft()); setEditing({ mode: 'create' }) }
   const startEdit = (m: api.UserMeal) => {
@@ -2038,6 +2463,92 @@ function RecipesTab({
     setEditing({ mode: 'edit', id: m.id })
   }
   const cancel = () => { setEditing(null); setSaving(false) }
+
+  // Phase E: composed-meal open/save/cancel handlers. Saving computes
+  // match_count via the same per-dish ingredient check the engine uses,
+  // so the badge on Today reads a consistent number whether the user
+  // gets there via Compose flow or the engine auto-bundles.
+  const startCreateComposed = () => {
+    setComposedDraft(emptyComposedDraft())
+    setComposedEditing({ mode: 'create' })
+  }
+  const startEditComposed = (meal: api.HouseholdMeal) => {
+    setComposedDraft({
+      name: meal.name,
+      description: meal.description,
+      slot: meal.slot,
+      dishIds: meal.dishes.map((d) => d.id),
+    })
+    setComposedEditing({ mode: 'edit', meal })
+  }
+  const cancelComposed = () => { setComposedEditing(null); setComposedSaving(false) }
+
+  // Resolve picked ids to the same `{id, name}` shape the engine expects.
+  // Seed ids come from DISHES; user ids are `user-<uuid>` (see
+  // userMealsToDishes). If the user picks a stale id (e.g. a deleted
+  // user_meal) we drop it — silently — rather than block save.
+  const resolveComposedDishes = (): { id: string; name: string }[] => {
+    const out: { id: string; name: string }[] = []
+    for (const id of composedDraft.dishIds) {
+      if (id.startsWith('user-')) {
+        const um = userMeals.find((m) => `user-${m.id}` === id)
+        if (um) out.push({ id, name: um.name })
+        continue
+      }
+      const seed = DISHES.find((d) => d.id === id)
+      if (seed) out.push({ id, name: seed.name })
+    }
+    return out
+  }
+
+  // Match percentage: of the resolved dishes, what fraction are fully
+  // covered by the kitchen inventory? Mirrors the engine's `match`
+  // calc on the primary return path.
+  const computeMatchCount = (dishes: { id: string }[]): number => {
+    if (dishes.length === 0) return 0
+    const stock = new Map(inventory.map((i) => [i.id, i.quantity]))
+    let covered = 0
+    for (const d of dishes) {
+      // User meals carry their own ingredients; seed dishes too.
+      const ings = d.id.startsWith('user-')
+        ? (userMeals.find((m) => `user-${m.id}` === d.id)?.ingredients ?? [])
+        : (DISHES.find((sd) => sd.id === d.id)?.ingredients ?? [])
+      if (ings.length === 0) { covered += 1; continue }
+      const all = ings.every((u) => (stock.get(u.ingredientId) ?? 0) >= u.quantity)
+      if (all) covered += 1
+    }
+    return Math.round((covered / dishes.length) * 100)
+  }
+
+  const saveComposed = async () => {
+    setComposedSaving(true)
+    try {
+      const dishes = resolveComposedDishes()
+      if (dishes.length === 0) {
+        alert('Pick at least one dish for the composed meal.')
+        setComposedSaving(false)
+        return
+      }
+      const match = computeMatchCount(dishes)
+      const payload = {
+        name: composedDraft.name.trim() || dishes.map((d) => d.name).join(' + '),
+        description: composedDraft.description.trim(),
+        slot: composedDraft.slot,
+        dishes,
+        match_count: match,
+      }
+      if (composedEditing?.mode === 'create') {
+        const created = await onCreateComposed(payload)
+        if (created) setComposedEditing(null)
+      } else if (composedEditing?.mode === 'edit') {
+        const updated = await onUpdateComposed(composedEditing.meal.id, payload)
+        if (updated) setComposedEditing(null)
+      }
+    } catch (e) {
+      console.error('Save composed meal failed:', e)
+      alert('Could not save composed meal. Try again.')
+    } finally { setComposedSaving(false) }
+  }
 
   const save = async () => {
     setSaving(true)
@@ -2097,6 +2608,22 @@ function RecipesTab({
     />
   }
 
+  // Phase E composed-meal editor renders in place, same pattern as the
+  // RecipeEditor above. When the user picks "New composed meal" or hits
+  // Edit on an existing one, the recipe grid is hidden and the editor
+  // takes the full section width.
+  if (composedEditing) {
+    return <ComposedMealEditor
+      draft={composedDraft}
+      setDraft={setComposedDraft}
+      userMeals={userMeals}
+      onSave={saveComposed}
+      onCancel={cancelComposed}
+      saving={composedSaving}
+      title={composedEditing.mode === 'create' ? 'New composed meal' : `Edit ${composedEditing.mode === 'edit' ? composedEditing.meal.name : ''}`}
+    />
+  }
+
   const ovByDishId = new Map(dishOverrides.map((o) => [o.dish_id, o]))
 
   return <section className="page-section recipes-page">
@@ -2107,6 +2634,7 @@ function RecipesTab({
     </div>
     <div className="recipes-tabs" role="tablist">
       <button role="tab" aria-selected={tab === 'yours'} className={`recipes-tab ${tab === 'yours' ? 'active' : ''}`} onClick={() => setCuratedTab('yours')}>Your recipes <em>{userMeals.length}</em></button>
+      <button role="tab" aria-selected={tab === 'composed'} className={`recipes-tab ${tab === 'composed' ? 'active' : ''}`} onClick={() => setCuratedTab('composed')}>Composed meals <em>{householdMeals.length}</em></button>
       <button role="tab" aria-selected={tab === 'curated'} className={`recipes-tab ${tab === 'curated' ? 'active' : ''}`} onClick={() => setCuratedTab('curated')}>Curated dishes <em>{DISHES.length}</em></button>
     </div>
 
@@ -2137,6 +2665,37 @@ function RecipesTab({
               <button className="reset-button mini danger" onClick={async () => {
                 if (!window.confirm(`Delete "${m.name}"? It'll stop appearing in suggestions.`)) return
                 try { await onDelete(m.id) } catch (e) { console.error(e); alert('Could not delete. Try again.') }
+              }}><Trash2 size={14} /> Delete</button>
+            </div>
+          </div>
+        </article>)}
+      </div>}
+    </>}
+
+    {tab === 'composed' && <>
+      <div className="recipes-toolbar">
+        <button className="primary" onClick={startCreateComposed}><Plus size={17} /> New composed meal</button>
+      </div>
+      {householdMeals.length === 0 ? <div className="empty-state">
+        <Layers size={28} />
+        <p>No composed meals yet. Tap "New composed meal" to bundle a few dishes into one meal — say "Cucumber + Salad + Anda Bhurji + Roti" — and it'll show up on Today alongside the auto-bundled options.</p>
+      </div> : <div className="recipes-grid">
+        {householdMeals.map((m) => <article key={m.id} className="recipe-card composed" style={{ '--meal-color': m.dishes[0] ? '#b96d35' : '#888' } as React.CSSProperties}>
+          <div className="recipe-art"><div className="plate"><div className="food-shape" /></div></div>
+          <div className="recipe-body">
+            <div className="meal-meta">
+              <span><Layers size={14} /> {m.dishes.length} dishes</span>
+              {m.slot && <span>{m.slot.charAt(0)}{m.slot.slice(1).toLowerCase()}</span>}
+              {m.match_count > 0 && <span>{m.match_count}% match</span>}
+            </div>
+            <h2>{m.name}</h2>
+            <p>{m.description || 'Your composed meal'}</p>
+            <ul>{m.dishes.slice(0, 6).map((d, i) => <li key={i}><span className="dish-dot" /><span><b>{d.name}</b></span></li>)}{m.dishes.length > 6 && <li className="recipe-more">+{m.dishes.length - 6} more</li>}</ul>
+            <div className="recipe-card-actions">
+              <button className="reset-button mini" onClick={() => startEditComposed(m)}>Edit</button>
+              <button className="reset-button mini danger" onClick={async () => {
+                if (!window.confirm(`Delete "${m.name}"? It'll stop appearing in suggestions.`)) return
+                try { await onDeleteComposed(m.id) } catch (e) { console.error(e); alert('Could not delete. Try again.') }
               }}><Trash2 size={14} /> Delete</button>
             </div>
           </div>
@@ -2193,6 +2752,139 @@ function RecipesTab({
 // Editor for an existing curated dish. Pre-fills with the current
 // effective values (override wins over curated). Save writes a fresh
 // override via onEditCurated — there's no "save as new", just edit-in-place.
+function ComposedMealEditor({
+  draft,
+  setDraft,
+  userMeals,
+  onSave,
+  onCancel,
+  saving,
+  title,
+}: {
+  draft: ComposedMealDraft
+  setDraft: React.Dispatch<React.SetStateAction<ComposedMealDraft>>
+  userMeals: api.UserMeal[]
+  onSave: () => Promise<void>
+  onCancel: () => void
+  saving: boolean
+  title: string
+}) {
+  // The picker lists curated DISHES + the household's user_meals. We
+  // group curated dishes by `kind` so the user can see mains/sides/
+  // breads/rice at a glance; user_meals land in a separate group.
+  const toggle = (id: string) => setDraft((d) => ({
+    ...d,
+    dishIds: d.dishIds.includes(id) ? d.dishIds.filter((x) => x !== id) : [...d.dishIds, id],
+  }))
+  const grouped = useMemo(() => {
+    const byKind: Record<string, typeof DISHES> = {}
+    for (const d of DISHES) {
+      const k = d.kind ?? 'main'
+      if (!byKind[k]) byKind[k] = []
+      byKind[k].push(d)
+    }
+    return byKind
+  }, [])
+  const canSave = draft.dishIds.length > 0 && !saving
+  return <div className="recipe-editor">
+    <div className="page-heading">
+      <span className="eyebrow"><Layers size={14} /> COMPOSED MEAL</span>
+      <h1>{title}</h1>
+      <p>Bundle a few dishes into one meal. It surfaces on Today as a single option you can pick in one tap — instead of the engine auto-bundling different dishes each refresh.</p>
+    </div>
+    <div className="recipe-form">
+      <label className="text-field">
+        <span>Meal name</span>
+        <input
+          value={draft.name}
+          onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+          placeholder="Auto-generated from dishes if you leave this blank"
+          autoFocus
+        />
+      </label>
+      <label className="text-field">
+        <span>Short subtitle (optional)</span>
+        <input
+          value={draft.description}
+          onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+          placeholder="e.g. Light weekday dinner"
+        />
+      </label>
+      <label className="setting-row">
+        <span><b>Slot</b><small>When this meal fits — leave on "Any" if it's flexible</small></span>
+        <select value={draft.slot ?? ''} onChange={(e) => setDraft({ ...draft, slot: e.target.value === '' ? null : (e.target.value as api.MealSlot) })}>
+          <option value="">Any time</option>
+          <option value="BREAKFAST">Breakfast</option>
+          <option value="LUNCH">Lunch</option>
+          <option value="DINNER">Dinner</option>
+          <option value="SNACKS">Snacks</option>
+        </select>
+      </label>
+
+      <div className="composed-dishes">
+        <div className="composed-dishes-head">
+          <span><b>Pick the dishes</b><small>Choose 1–8. Use curated dishes and your own recipes.</small></span>
+        </div>
+        {Object.entries(grouped).map(([kind, list]) => <div key={kind} className="composed-dishes-group">
+          <h4>{kind}</h4>
+          <div className="composed-dishes-grid">
+            {list.map((d) => {
+              const picked = draft.dishIds.includes(d.id)
+              return <button
+                key={d.id}
+                type="button"
+                className={`composed-dish ${picked ? 'picked' : ''}`}
+                onClick={() => toggle(d.id)}
+                aria-pressed={picked}
+              >
+                <span className="composed-dish-dot" style={{ background: d.color }} />
+                <span className="composed-dish-body">
+                  <b>{d.name}</b>
+                  <small>{d.time} min · {d.vegetarian ? 'Veg' : 'Non-veg'}</small>
+                </span>
+                {picked && <Check size={16} className="composed-dish-check" />}
+              </button>
+            })}
+          </div>
+        </div>)}
+        {userMeals.length > 0 && <div className="composed-dishes-group">
+          <h4>Your recipes</h4>
+          <div className="composed-dishes-grid">
+            {userMeals.map((m) => {
+              const id = `user-${m.id}`
+              const picked = draft.dishIds.includes(id)
+              return <button
+                key={id}
+                type="button"
+                className={`composed-dish ${picked ? 'picked' : ''}`}
+                onClick={() => toggle(id)}
+                aria-pressed={picked}
+              >
+                <span className="composed-dish-dot" style={{ background: m.color ?? '#b96d35' }} />
+                <span className="composed-dish-body">
+                  <b>{m.name}</b>
+                  <small>{m.time} min · {m.vegetarian ? 'Veg' : 'Non-veg'}</small>
+                </span>
+                {picked && <Check size={16} className="composed-dish-check" />}
+              </button>
+            })}
+          </div>
+        </div>}
+      </div>
+
+      {draft.dishIds.length > 0 && <div className="composed-dishes-summary">
+        <span><b>{draft.dishIds.length} dish{draft.dishIds.length === 1 ? '' : 'es'} picked</b></span>
+        <small>Title will be: {draft.name.trim() || '(joined from selected dishes)'}</small>
+      </div>}
+
+      <div className="recipe-actions">
+        <button className="primary" onClick={onSave} disabled={!canSave}>{saving ? 'Saving…' : <><Check size={17} /> Save composed meal</>}</button>
+        <button className="reset-button" onClick={onCancel} disabled={saving}>Cancel</button>
+      </div>
+    </div>
+  </div>
+}
+
 function CuratedDishEditor({
   dish,
   inventory,
@@ -2266,6 +2958,570 @@ function CuratedDishEditor({
         <button className="primary" onClick={save} disabled={!canSave}>{saving ? 'Saving…' : <><Check size={17} /> Save changes</>}</button>
         <button className="reset-button" onClick={onCancel} disabled={saving}>Cancel</button>
       </div>
+    </div>
+  </div>
+}
+
+// =============================================================================
+// AddDishModal — Phase F picker for the Today slot canvas.
+//
+// User flow:
+//   1. Tap the slot chip's `+ Add` button → modal opens for that slot.
+//   2. The modal has 4 sections: Your recipes, Composed meals, Curated
+//      dishes, and "Add a new dish" (ad-hoc text input).
+//   3. User can multi-select dishes across sections (checkboxes).
+//   4. Tapping a curated dish that's NOT in their recipes shows an
+//      inline "Add to your recipes" CTA — one tap promotes it to
+//      user_meals so it's available under Your recipes next time.
+//   5. The bottom "Add N dishes" button persists the picks as a single
+//      manual_dishes[] write on the meal_plans row.
+//
+// Closed on backdrop click, ESC key, or the close button.
+// =============================================================================
+
+type AddDishModalProps = {
+  slot: api.MealSlot
+  slotLabel: string
+  userMeals: api.UserMeal[]
+  householdMeals: api.HouseholdMeal[]
+  inventory: InventoryItem[]
+  preferences: Preferences
+  selected: api.ManualDish[]
+  onChangeSelected: (next: api.ManualDish[]) => void
+  search: string
+  onChangeSearch: (s: string) => void
+  tab: 'yours' | 'composed' | 'curated' | 'new'
+  onChangeTab: (t: 'yours' | 'composed' | 'curated' | 'new') => void
+  adhoc: string
+  onChangeAdhoc: (s: string) => void
+  saving: boolean
+  onClose: () => void
+  onSave: (nextPicks: api.ManualDish[]) => Promise<void>
+  onPromoteCuratedToRecipe: (args: { dishId: string; name: string; time: number; vegetarian: boolean; color: string }) => Promise<void>
+}
+
+function AddDishModal(props: AddDishModalProps) {
+  const { slot, slotLabel, userMeals, householdMeals, preferences, selected, onChangeSelected, search, onChangeSearch, tab, onChangeTab, adhoc, onChangeAdhoc, saving, onClose, onSave, onPromoteCuratedToRecipe } = props
+
+  // Section lists. The `selected` array is the source of truth — the
+  // modal keeps it across tab switches so a user can browse multiple
+  // sections without losing their picks.
+  const userMealNamesLower = new Set(userMeals.map((m) => m.name.toLowerCase()))
+
+  const yourRecipes = userMeals.filter((m) => {
+    if (!search.trim()) return true
+    return m.name.toLowerCase().includes(search.toLowerCase()) || m.description.toLowerCase().includes(search.toLowerCase())
+  })
+
+  const composedMeals = householdMeals.filter((m) => {
+    if (!search.trim()) return true
+    const names = Array.isArray(m.dishes) ? m.dishes.map((d: any) => d.name).join(' ').toLowerCase() : ''
+    return (m.name ?? '').toLowerCase().includes(search.toLowerCase()) || names.includes(search.toLowerCase())
+  })
+
+  const curated = DISHES.filter((d) => {
+    if (preferences.vegetarian && !d.vegetarian) return false
+    if (!search.trim()) return true
+    return d.name.toLowerCase().includes(search.toLowerCase()) || d.description.toLowerCase().includes(search.toLowerCase())
+  })
+
+  const isSelected = (key: string) => selected.some((d) => `${d.source}:${d.dish_id ?? d.name}` === key)
+  const toggleSelected = (dish: api.ManualDish) => {
+    const key = `${dish.source}:${dish.dish_id ?? dish.name}`
+    if (isSelected(key)) onChangeSelected(selected.filter((d) => `${d.source}:${d.dish_id ?? d.name}` !== key))
+    else onChangeSelected([...selected, dish])
+  }
+
+  const counts = {
+    yours: userMeals.length,
+    composed: householdMeals.length,
+    curated: curated.length,
+  }
+
+  const handleAddAdhoc = () => {
+    const name = adhoc.trim()
+    if (!name) return
+    onChangeSelected([...selected, { dish_id: null, name, source: 'adhoc' }])
+    onChangeAdhoc('')
+  }
+
+  const handleSave = async () => { await onSave(selected) }
+
+  // ESC to close
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="modal add-dish-modal" role="dialog" aria-label={`Add a dish for ${slotLabel}`}>
+      <header>
+        <div>
+          <span className="eyebrow">{slot}</span>
+          <h3>Add a dish for {slotLabel}</h3>
+        </div>
+        <button className="ghost small icon-only" onClick={onClose} aria-label="Close"><X size={18} /></button>
+      </header>
+
+      <div className="picker-search">
+        <input
+          type="search"
+          placeholder="Search dishes…"
+          value={search}
+          onChange={(e) => onChangeSearch(e.target.value)}
+          autoFocus
+        />
+      </div>
+
+      <nav className="picker-tabs" role="tablist">
+        <button role="tab" aria-selected={tab === 'yours'} className={tab === 'yours' ? 'active' : ''} onClick={() => onChangeTab('yours')}>
+          Your recipes {counts.yours > 0 && <span className="count">{counts.yours}</span>}
+        </button>
+        <button role="tab" aria-selected={tab === 'composed'} className={tab === 'composed' ? 'active' : ''} onClick={() => onChangeTab('composed')}>
+          Composed {counts.composed > 0 && <span className="count">{counts.composed}</span>}
+        </button>
+        <button role="tab" aria-selected={tab === 'curated'} className={tab === 'curated' ? 'active' : ''} onClick={() => onChangeTab('curated')}>
+          Curated {counts.curated > 0 && <span className="count">{counts.curated}</span>}
+        </button>
+        <button role="tab" aria-selected={tab === 'new'} className={tab === 'new' ? 'active' : ''} onClick={() => onChangeTab('new')}>
+          New dish
+        </button>
+      </nav>
+
+      <div className="picker-body">
+        {tab === 'yours' && (yourRecipes.length === 0
+          ? <p className="picker-empty">No recipes yet. Add some from the Recipes tab, or pick a curated dish — you can promote it to your recipes in one tap.</p>
+          : <ul className="picker-list">
+              {yourRecipes.map((m) => {
+                const dish: api.ManualDish = { dish_id: m.id, name: m.name, source: 'user_meal' }
+                const key = `${dish.source}:${dish.dish_id}`
+                return <li key={m.id}>
+                  <label className={`picker-row ${isSelected(key) ? 'checked' : ''}`}>
+                    <input type="checkbox" checked={isSelected(key)} onChange={() => toggleSelected(dish)} />
+                    <span className="dish-dot" style={{ background: sourceColor('user_meal') }} />
+                    <span className="picker-row-text"><b>{m.name}</b><small>{m.description || 'Your recipe'}</small></span>
+                  </label>
+                </li>
+              })}
+            </ul>
+        )}
+
+        {tab === 'composed' && (composedMeals.length === 0
+          ? <p className="picker-empty">No composed meals yet. Bundle 2+ dishes in the Recipes tab → Composed meals.</p>
+          : <ul className="picker-list">
+              {composedMeals.map((m) => {
+                const dish: api.ManualDish = { dish_id: m.id, name: m.name, source: 'household_meal' }
+                const key = `${dish.source}:${dish.dish_id}`
+                const dishList = Array.isArray(m.dishes) ? m.dishes.map((d: any) => d.name).join(' + ') : ''
+                return <li key={m.id}>
+                  <label className={`picker-row ${isSelected(key) ? 'checked' : ''}`}>
+                    <input type="checkbox" checked={isSelected(key)} onChange={() => toggleSelected(dish)} />
+                    <span className="dish-dot" style={{ background: sourceColor('household_meal') }} />
+                    <span className="picker-row-text"><b>{m.name}</b><small>{dishList || m.description || 'Composed meal'}</small></span>
+                  </label>
+                </li>
+              })}
+            </ul>
+        )}
+
+        {tab === 'curated' && (curated.length === 0
+          ? <p className="picker-empty">No curated dishes match. Try clearing the search.</p>
+          : <ul className="picker-list">
+              {curated.map((d) => {
+                const dish: api.ManualDish = { dish_id: d.id, name: d.name, source: 'curated' }
+                const key = `${dish.source}:${dish.dish_id}`
+                const alreadyInRecipes = userMealNamesLower.has(d.name.toLowerCase())
+                return <li key={d.id}>
+                  <label className={`picker-row ${isSelected(key) ? 'checked' : ''}`}>
+                    <input type="checkbox" checked={isSelected(key)} onChange={() => toggleSelected(dish)} />
+                    <span className="dish-dot" style={{ background: d.color }} />
+                    <span className="picker-row-text">
+                      <b>{d.name}</b>
+                      <small>{d.description}{alreadyInRecipes ? '' : ' — not in your recipes yet'}</small>
+                    </span>
+                  </label>
+                  {!alreadyInRecipes && <button
+                    type="button"
+                    className="ghost small promote"
+                    onClick={() => onPromoteCuratedToRecipe({ dishId: d.id, name: d.name, time: d.time, vegetarian: d.vegetarian, color: d.color })}
+                    title="Add this curated dish to your recipes"
+                  ><Plus size={13} /> Add to recipes</button>}
+                </li>
+              })}
+            </ul>
+        )}
+
+        {tab === 'new' && <div className="picker-new">
+          <p className="picker-empty">Don't see it? Add a dish name and it'll show up on this slot, saved just for today.</p>
+          <div className="text-field">
+            <input
+              type="text"
+              value={adhoc}
+              onChange={(e) => onChangeAdhoc(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleAddAdhoc() }}
+              placeholder="e.g. Makki ki Roti"
+              maxLength={60}
+            />
+            <button className="primary small" disabled={!adhoc.trim()} onClick={handleAddAdhoc}><Plus size={14} /> Add</button>
+          </div>
+        </div>}
+      </div>
+
+      <footer className="picker-footer">
+        <div className="picker-chosen">
+          {selected.length === 0
+            ? <span>Pick 1+ dishes</span>
+            : <span>{selected.length} dish{selected.length === 1 ? '' : 'es'} selected</span>}
+          {selected.length > 0 && <ul>{selected.map((d, i) => <li key={`${d.dish_id ?? d.name}-${i}`}><span className="dish-dot" style={{ background: sourceColor(d.source) }} />{d.name}<button onClick={() => toggleSelected(d)} aria-label={`Remove ${d.name}`}><X size={12} /></button></li>)}</ul>}
+        </div>
+        <div className="picker-actions">
+          <button className="ghost" onClick={onClose}>Cancel</button>
+          <button className="primary" disabled={selected.length === 0 || saving} onClick={handleSave}>{saving ? 'Saving…' : `Add ${selected.length || ''} dish${selected.length === 1 ? '' : 'es'}`.trim()}</button>
+        </div>
+      </footer>
+    </div>
+  </div>
+}
+
+// =============================================================================
+// CreatePollModal — owner sends the slot to voters for a vote.
+//
+// We never suggest options. The modal opens with exactly ONE option pre-
+// filled with the user's current picks. If they want voters to choose
+// between two meals, they tap "+ Add option" and fill in the second one
+// themselves. Saves to meal_polls, then opens WhatsApp with the join URL.
+//
+// Schema constraint: meal_polls.options must have 2..6 entries. So the
+// "Send & share" button stays disabled until the owner has at least 2
+// options filled in. The owner can always save 1 option as a draft via
+// "Save only" — but the DB CHECK rejects 1, so we only enable Save when
+// at least 2 options are present.
+// =============================================================================
+
+type CreatePollModalProps = {
+  slot: api.MealSlot
+  slotLabel: string
+  picks: api.ManualDish[]
+  votersCount: number
+  joiningUrl: string
+  shareText: string
+  userMeals: api.UserMeal[]
+  householdMeals: api.HouseholdMeal[]
+  inventory: InventoryItem[]
+  preferences: Preferences
+  onShare: (text: string) => void
+  onClose: () => void
+  onSave: (options: api.PollOption[]) => Promise<void>
+  onPromoteCuratedToRecipe: (args: { dishId: string; name: string; time: number; vegetarian: boolean; color: string }) => Promise<void>
+}
+
+function CreatePollModal(props: CreatePollModalProps) {
+  const { slot, slotLabel, picks, votersCount, joiningUrl, shareText, userMeals, householdMeals, inventory, preferences, onShare, onClose, onSave, onPromoteCuratedToRecipe } = props
+
+  const newOption = (title: string, dishes: api.ManualDish[]): api.PollOption => ({
+    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `opt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    title,
+    dishes,
+  })
+
+  // Seed exactly 1 option — the user's own picks. No engine involvement.
+  // The "Your pick" title is editable by clicking on it.
+  const initial: api.PollOption[] = useMemo(
+    () => [newOption(picks.length > 0 ? 'Your pick' : 'Option', picks)],
+    [], // eslint-disable-line react-hooks/exhaustive-deps
+  )
+
+  const [options, setOptions] = useState<api.PollOption[]>(initial)
+  const [saving, setSaving] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingTitle, setEditingTitle] = useState('')
+  // Picker state — when `pickerOpenFor` is set, the AddDishModal renders
+  // for that option. The picker reuses the same UX as Today's "Add a dish".
+  const [pickerOpenFor, setPickerOpenFor] = useState<string | null>(null)
+  const [pickerSelected, setPickerSelected] = useState<api.ManualDish[]>([])
+  const [pickerSearch, setPickerSearch] = useState('')
+  const [pickerTab, setPickerTab] = useState<'yours' | 'composed' | 'curated' | 'new'>('yours')
+  const [pickerAdhoc, setPickerAdhoc] = useState('')
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const moveOption = (idx: number, dir: -1 | 1) => {
+    setOptions((prev) => {
+      const next = [...prev]
+      const target = idx + dir
+      if (target < 0 || target >= next.length) return prev
+      ;[next[idx], next[target]] = [next[target], next[idx]]
+      return next
+    })
+  }
+
+  const removeOption = (id: string) => {
+    if (options.length <= 1) return  // must always keep at least one option
+    setOptions((prev) => prev.filter((o) => o.id !== id))
+  }
+
+  const startEditTitle = (opt: api.PollOption) => { setEditingId(opt.id); setEditingTitle(opt.title) }
+  const commitEditTitle = () => {
+    if (!editingId) return
+    setOptions((prev) => prev.map((o) => o.id === editingId ? { ...o, title: editingTitle.trim() || o.title } : o))
+    setEditingId(null)
+  }
+
+  const handleSave = async () => {
+    setSaving(true)
+    try { await onSave(options) }
+    catch (e) { console.error('Save poll failed:', e); alert('Could not save poll. Try again.') }
+    finally { setSaving(false) }
+  }
+
+  const handleShare = async () => {
+    setSaving(true)
+    try {
+      await onSave(options)
+      onShare(shareText)
+    } finally { setSaving(false) }
+  }
+
+  // Open the dish picker against a specific option. Pre-loads the picker's
+  // `selected` with whatever dishes the option already has, so users can
+  // refine their picks in the same UX as Today's "Add a dish".
+  const openPickerFor = (optId: string) => {
+    const opt = options.find((o) => o.id === optId)
+    if (!opt) return
+    setPickerSelected(opt.dishes)
+    setPickerSearch('')
+    setPickerTab('yours')
+    setPickerAdhoc('')
+    setPickerOpenFor(optId)
+  }
+  const closePicker = () => setPickerOpenFor(null)
+  const setOptionDishes = (optId: string, dishes: api.ManualDish[]) => {
+    setOptions((prev) => prev.map((o) => o.id !== optId ? o : { ...o, dishes }))
+  }
+  // Edit handlers for option dishes
+  const removeDishFromOption = (optId: string, dishIdx: number) => {
+    setOptions((prev) => prev.map((o) => o.id !== optId ? o : {
+      ...o,
+      dishes: o.dishes.filter((_, i) => i !== dishIdx),
+    }))
+  }
+  const addOption = () => {
+    setOptions((prev) => prev.length >= 6 ? prev : [
+      ...prev,
+      newOption(`Option ${String.fromCharCode(65 + prev.length)}`, []),
+    ])
+  }
+
+  const canSend = options.length >= 2 && options.every((o) => o.title.trim().length > 0 && o.dishes.length > 0 && o.dishes.every((d) => d.name.trim().length > 0))
+
+  return <div className="modal-backdrop" onClick={(e) => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="modal create-poll-modal" role="dialog" aria-label={`Send ${slotLabel} for voting`}>
+      <header>
+        <div>
+          <span className="eyebrow">{slot}</span>
+          <h3>Send {slotLabel} for voting</h3>
+        </div>
+        <button className="ghost small icon-only" onClick={onClose} aria-label="Close"><X size={18} /></button>
+      </header>
+
+      <div className="picker-body create-poll-body">
+        <p className="picker-empty">
+          Your pick is shown below. Tap <b>+ Add option</b> if you want voters to choose between two meals — then pick dishes for each option just like on Today.
+        </p>
+        <ul className="create-poll-options">
+          {options.map((opt, idx) => <li key={opt.id} className="create-poll-option">
+            <div className="create-poll-option-header">
+              <span className="create-poll-option-rank">{String.fromCharCode(65 + idx)}</span>
+              {editingId === opt.id
+                ? <input className="create-poll-option-title-input" autoFocus value={editingTitle} onChange={(e) => setEditingTitle(e.target.value)} onBlur={commitEditTitle} onKeyDown={(e) => { if (e.key === 'Enter') commitEditTitle(); if (e.key === 'Escape') setEditingId(null) }} />
+                : <button className="create-poll-option-title" onClick={() => startEditTitle(opt)} title="Click to rename"><b>{opt.title}</b></button>}
+              <span className="create-poll-option-actions">
+                <button className="ghost small icon-only" aria-label="Move up" disabled={idx === 0} onClick={() => moveOption(idx, -1)}>↑</button>
+                <button className="ghost small icon-only" aria-label="Move down" disabled={idx === options.length - 1} onClick={() => moveOption(idx, 1)}>↓</button>
+                <button className="ghost small icon-only" aria-label={`Remove option ${opt.title}`} disabled={options.length <= 1} onClick={() => removeOption(opt.id)}><X size={14} /></button>
+              </span>
+            </div>
+            <ul className="create-poll-option-dishes">
+              {opt.dishes.length === 0
+                ? <li className="picker-empty">No dishes yet — type one below.</li>
+                : opt.dishes.map((d, i) => <li key={`${d.dish_id ?? 'adhoc'}-${i}`}>
+                    <span className="dish-dot" style={{ background: sourceColor(d.source) }} />
+                    <span className="create-poll-dish-name"><b>{d.name || <em>(unnamed)</em>}</b><small>{sourceLabel(d.source)}</small></span>
+                    <button type="button" className="ghost small icon-only" aria-label={`Remove dish ${d.name || i}`} onClick={() => removeDishFromOption(opt.id, i)}><X size={12} /></button>
+                  </li>)}
+              <li>
+                <button type="button" className="ghost mini" onClick={() => openPickerFor(opt.id)}><Plus size={12} /> {opt.dishes.length === 0 ? 'Pick dishes' : 'Add / change dishes'}</button>
+              </li>
+            </ul>
+          </li>)}
+        </ul>
+        {options.length < 6 && (
+          <button type="button" className="ghost create-poll-add-option" onClick={addOption}><Plus size={16} /> Add option</button>
+        )}
+      </div>
+
+      <footer className="picker-footer">
+        <div className="picker-chosen">
+          <span>Will send to {votersCount} voter{votersCount === 1 ? '' : 's'} — share via WhatsApp</span>
+          <small className="picker-url-preview">{joiningUrl}</small>
+        </div>
+        <div className="picker-actions">
+          <button className="ghost" onClick={onClose}>Cancel</button>
+          <button className="ghost" onClick={handleSave} disabled={saving || !canSend}>Save only</button>
+          <button className="primary" onClick={handleShare} disabled={saving || !canSend}>{saving ? 'Saving…' : <><Share2 size={14} /> Send & share</>}</button>
+        </div>
+      </footer>
+    </div>
+    {pickerOpenFor && <AddDishModal
+      slot={slot}
+      slotLabel={slotLabel}
+      userMeals={userMeals}
+      householdMeals={householdMeals}
+      inventory={inventory}
+      preferences={preferences}
+      selected={pickerSelected}
+      onChangeSelected={setPickerSelected}
+      search={pickerSearch}
+      onChangeSearch={setPickerSearch}
+      tab={pickerTab}
+      onChangeTab={setPickerTab}
+      adhoc={pickerAdhoc}
+      onChangeAdhoc={setPickerAdhoc}
+      saving={false}
+      onClose={closePicker}
+      onSave={async (nextPicks) => {
+        const targetId = pickerOpenFor
+        closePicker()
+        setOptionDishes(targetId, nextPicks)
+      }}
+      onPromoteCuratedToRecipe={onPromoteCuratedToRecipe}
+    />}
+  </div>
+}
+
+// =============================================================================
+// VoterDashboard — light-weight view voters see on their device. The join
+// flow creates a voter row; this is where they cast votes. We accept name
+// input on first visit, recognise returning voters via localStorage, and
+// show one card per active poll today.
+// =============================================================================
+
+type VoterDashboardProps = {
+  householdId: string
+  householdName: string
+  joinCode: string
+  pollsBySlot: Record<string, api.MealPoll | null>
+  tallyByPoll: Record<string, Record<string, string>>
+  todayKey: string
+  onClose: () => void
+}
+
+function VoterDashboard(props: VoterDashboardProps) {
+  const { householdId, householdName, joinCode, pollsBySlot, tallyByPoll, todayKey, onClose } = props
+  // Recognise returning voter via localStorage. Multiple voters per device
+  // are out of scope for v1 — same person, same device.
+  const storageKey = `kya-voter-${joinCode}`
+  const [voter, setVoter] = useState<{ id: string; name: string } | null>(() => {
+    if (typeof window === 'undefined') return null
+    try {
+      const raw = window.localStorage.getItem(storageKey)
+      if (raw) return JSON.parse(raw)
+    } catch {}
+    return null
+  })
+  const [name, setName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const handleJoin = async () => {
+    setBusy(true); setError(null)
+    try {
+      const found = await api.findVoterByName(householdId, name)
+      if (!found) { setError(`"${name}" isn't on ${householdName}'s roster. Ask the owner to add you in the Family tab.`); return }
+      const next = { id: found.id, name: found.name }
+      setVoter(next)
+      try { window.localStorage.setItem(storageKey, JSON.stringify(next)) } catch {}
+    } catch (e: any) {
+      setError(e?.message ?? 'Could not look up your name.')
+    } finally { setBusy(false) }
+  }
+
+  if (!voter) return <div className="auth-screen">
+    <div className="onboarding-card">
+      <span className="eyebrow"><Users size={14} /> VOTING</span>
+      <h1>What's your name in {householdName}?</h1>
+      <p>Your name should match the one the host added in their Family tab. This stays on your device so you don't have to enter it again.</p>
+      <label className="onboarding-field">
+        <span>Name</span>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Papa, Diya" autoFocus onKeyDown={(e) => e.key === 'Enter' && handleJoin()} />
+      </label>
+      {error && <p className="onboarding-error">{error}</p>}
+      <div className="onboarding-actions">
+        <button className="primary" disabled={busy || !name.trim()} onClick={handleJoin}>{busy ? 'Looking up…' : 'Continue'}</button>
+        <button className="reset-button" onClick={onClose}>Done</button>
+      </div>
+    </div>
+  </div>
+
+  const activePolls = Object.values(pollsBySlot).filter(Boolean) as api.MealPoll[]
+  if (activePolls.length === 0) return <div className="auth-screen">
+    <div className="onboarding-card">
+      <span className="eyebrow"><Vote size={14} /> VOTING</span>
+      <h1>Hi {voter.name}!</h1>
+      <p>No polls open yet for today. The owner will send one when they're ready — you'll see the options here.</p>
+      <div className="onboarding-actions">
+        <button className="reset-button" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  </div>
+
+  return <div className="voter-dashboard">
+    <header>
+      <div>
+        <span className="eyebrow">VOTING — {todayKey}</span>
+        <h1>{householdName}</h1>
+        <p>Hi {voter.name} — pick one option for each meal.</p>
+      </div>
+      <button className="ghost icon-only" onClick={onClose} aria-label="Close"><X size={18} /></button>
+    </header>
+    <div className="voter-polls">
+      {activePolls.map((poll) => {
+        const tally = tallyByPoll[poll.id] ?? {}
+        const myPick = tally[voter.id]
+        const total = Object.keys(tally).length
+        return <article key={poll.id} className="voter-poll-card">
+          <header>
+            <span className="eyebrow">{poll.slot}</span>
+            <h3>{poll.slot === 'BREAKFAST' ? "Today's breakfast" : poll.slot === 'LUNCH' ? "Today's lunch" : "Tonight's dinner"}</h3>
+            <small>{total} vote{total === 1 ? '' : 's'} so far</small>
+          </header>
+          <div className="voter-poll-options">
+            {poll.options.map((opt) => {
+              const count = Object.values(tally).filter((o) => o === opt.id).length
+              const mine = myPick === opt.id
+              const closed = !!poll.closed_at
+              return <button
+                key={opt.id}
+                className={`voter-poll-option ${mine ? 'mine' : ''} ${closed ? 'closed' : ''}`}
+                disabled={closed}
+                onClick={async () => {
+                  try { await api.upsertPollVote(householdId, voter.id, poll.id, opt.id) } catch (e) { alert('Could not cast your vote — try again.') }
+                }}
+              >
+                <div className="voter-poll-option-head"><b>{opt.title}</b>{mine && <span className="voter-mine-tag">Your pick</span>}</div>
+                <div className="voter-poll-option-dishes">{opt.dishes.map((d) => d.name).join(' + ') || 'No dishes'}</div>
+                <div className="voter-poll-option-meter"><i style={{ width: `${total ? Math.round((count / total) * 100) : 0}%` }} /></div>
+                <div className="voter-poll-option-count">{count} vote{count === 1 ? '' : 's'}</div>
+              </button>
+            })}
+          </div>
+        </article>
+      })}
     </div>
   </div>
 }

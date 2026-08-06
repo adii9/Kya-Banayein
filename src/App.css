@@ -42,6 +42,8 @@ h1 { font-family: 'DM Serif Display', serif; font-size: clamp(42px, 6vw, 68px); 
 .food-shape { width: 91px; height: 91px; border-radius: 45% 55% 52% 48%; background: radial-gradient(circle at 35% 30%, #f3c85c 0 7%, transparent 8%), radial-gradient(circle at 62% 65%, #6f883d 0 8%, transparent 9%), radial-gradient(circle at 40% 50%, color-mix(in srgb, var(--meal-color) 60%, #e1ad3d), var(--meal-color)); box-shadow: inset 0 0 20px rgba(75,35,10,.18); }
 .garnish { position: absolute; color: #fff6d4; font-size: 20px; }
 .match-badge { position: absolute; right: 14px; bottom: 14px; background: rgba(255,253,248,.94); color: var(--green); padding: 7px 10px; border-radius: 15px; font-size: 10px; font-weight: 700; display: flex; align-items: center; gap: 4px; }
+.custom-badge { position: absolute; left: 14px; bottom: 14px; background: rgba(193, 39, 45, .92); color: #fff8eb; padding: 7px 10px; border-radius: 15px; font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }
+.meal-card.custom { border-color: rgba(193, 39, 45, .35); box-shadow: 0 0 0 1px rgba(193, 39, 45, .12), var(--shadow); }
 .meal-body { padding: 20px; }
 .meal-meta { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
 .meal-meta span { display: flex; align-items: center; gap: 5px; }
@@ -507,12 +509,18 @@ header .brand small { color: var(--muted); }
 .recipes-tab.active { background: white; color: var(--ink); box-shadow: 0 1px 4px rgba(0,0,0,.06); }
 .recipes-tab.active em { background: var(--orange); color: white; }
 
+/* Composed-meals tab uses a slightly different badge colour so the
+   user can tell their authored multi-dish meals apart from the
+   single-recipe "Your recipes" tab. */
+.recipes-tab[aria-selected="true"]:nth-of-type(2) em { background: var(--red); }
+
 .curated-hint { color: var(--muted); font-size: 12px; line-height: 1.55; padding: 10px 14px; background: rgba(220,165,49,.06); border: 1px dashed rgba(220,165,49,.3); border-radius: 10px; margin: 0 0 16px; }
 
 .recipes-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 .recipe-card { background: var(--card); border: 1px solid #e8e0d1; border-radius: 18px; overflow: hidden; box-shadow: var(--shadow); display: flex; flex-direction: column; }
 .recipe-card.curated.edited { border-color: rgba(220,165,49,.4); box-shadow: 0 0 0 1px rgba(220,165,49,.15), var(--shadow); }
 .recipe-card.curated.hidden { opacity: .55; }
+.recipe-card.composed { border-color: rgba(193, 39, 45, .25); box-shadow: 0 0 0 1px rgba(193, 39, 45, .08), var(--shadow); }
 .recipe-card.curated.hidden .recipe-art { filter: grayscale(.6); }
 .recipe-overlay-tag { position: absolute; top: 10px; right: 10px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .8px; padding: 4px 9px; border-radius: 100px; background: rgba(0,0,0,.55); color: white; }
 .recipe-overlay-tag.alt { background: var(--orange); }
@@ -588,3 +596,216 @@ header .brand small { color: var(--muted); }
 /* Onboarding footnote — small "and there's also Recipes" callout */
 .onboarding-footnote { color: var(--muted); font-size: 12px; line-height: 1.55; padding: 12px 14px; background: rgba(220,165,49,.06); border-radius: 10px; margin: 0 0 18px; border: 1px dashed rgba(220,165,49,.25); }
 .onboarding-footnote b { color: var(--ink); }
+
+/* =========================================================================
+   Composed-meal editor (Recipes tab → Composed meals → New)
+   ========================================================================= */
+.composed-dishes { background: rgba(255,253,248,.6); border: 1px solid #e8e0d1; border-radius: 14px; padding: 14px; margin-top: 6px; }
+.composed-dishes-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 10px; }
+.composed-dishes-head small { color: var(--muted); font-size: 11px; }
+.composed-dishes-group { margin-bottom: 12px; }
+.composed-dishes-group:last-child { margin-bottom: 0; }
+.composed-dishes-group h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); font-weight: 700; }
+.composed-dishes-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+.composed-dish { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--card); border: 1px solid #e8e0d1; border-radius: 10px; cursor: pointer; text-align: left; transition: border-color .15s, background .15s, transform .1s; font: inherit; color: inherit; }
+.composed-dish:hover { border-color: rgba(220,165,49,.5); }
+.composed-dish.picked { border-color: var(--red); background: rgba(193, 39, 45, .04); }
+.composed-dish-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.composed-dish-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.composed-dish-body b { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composed-dish-body small { font-size: 11px; color: var(--muted); }
+.composed-dish-check { color: var(--red); flex-shrink: 0; }
+.composed-dishes-summary { margin-top: 12px; padding: 10px 12px; background: rgba(220,165,49,.06); border-radius: 10px; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.composed-dishes-summary small { color: var(--muted); font-size: 11px; text-align: right; }
+
+/* =============================================================================
+   Phase F: slot canvas + add-dish modal
+   Today no longer auto-suggests meals. Each slot is a card the user
+   populates with dishes from their recipes, composed meals, the curated
+   list, or a free-text "new dish" entry. The modal is invoked by the
+   slot chip's + Add button.
+   ============================================================================ */
+
+.slot-canvas { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 4px 0 32px; }
+@media (max-width: 920px) { .slot-canvas { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 620px) { .slot-canvas { grid-template-columns: 1fr; } }
+
+.slot-canvas-card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; min-height: 220px; transition: border-color .15s, box-shadow .15s; }
+.slot-canvas-card.active { border-color: var(--ink); box-shadow: 0 0 0 3px rgba(0,0,0,.04); }
+.slot-canvas-card.confirmed { background: rgba(94,140,90,.06); border-color: rgba(94,140,90,.4); }
+.slot-canvas-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.slot-canvas-card > header h3 { font-family: 'DM Serif Display', serif; font-size: 22px; font-weight: 400; margin: 4px 0 0; letter-spacing: -.02em; }
+.slot-canvas-card > header .eyebrow { font-size: 10px; }
+.slot-canvas-actions { display: flex; gap: 6px; align-items: center; }
+.slot-canvas-actions button[disabled] { opacity: .55; cursor: not-allowed; }
+
+.slot-empty { flex: 1; display: flex; flex-direction: column; gap: 12px; justify-content: center; padding: 8px 0; color: var(--muted); }
+.slot-empty p { margin: 0; font-size: 14px; }
+.slot-empty .suggest-one { color: var(--orange); font-weight: 600; align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; padding: 4px 0; }
+
+.slot-dishes { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.slot-dish { display: grid; grid-template-columns: 14px 1fr auto; align-items: center; gap: 12px; padding: 11px 14px; background: rgba(255,253,248,.85); border: 1px solid var(--line); border-radius: 12px; }
+.slot-dish .dish-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+.slot-dish .dish-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.slot-dish .dish-text b { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot-dish .dish-text small { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.slot-dish-remove { background: transparent; border: 0; padding: 6px; border-radius: 8px; cursor: pointer; color: var(--muted); display: grid; place-items: center; }
+.slot-dish-remove:hover { background: rgba(193, 39, 45, .08); color: var(--red); }
+
+.slot-canvas-card > footer { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.slot-add-inline, .slot-confirm-inline { display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; font-size: 13px; font-weight: 600; border-radius: 10px; cursor: pointer; }
+.slot-add-inline { background: rgba(255,253,248,.7); border: 1px dashed var(--line); color: var(--ink); }
+.slot-add-inline:hover { border-style: solid; border-color: var(--orange); color: var(--orange); }
+.slot-confirm-inline { background: var(--ink); border: 1px solid var(--ink); color: #fff; }
+.slot-confirm-inline:hover { background: #000; }
+.slot-confirmed-tag { display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; background: rgba(94,140,90,.15); color: #4f7a3f; border-radius: 10px; font-size: 13px; font-weight: 600; }
+
+/* ----- Add-dish modal ----- */
+
+.modal-backdrop { position: fixed; inset: 0; background: rgba(40, 30, 20, .45); backdrop-filter: blur(4px); display: grid; place-items: center; padding: 20px; z-index: 100; animation: fade-in .15s ease-out; }
+@keyframes fade-in { from { opacity: 0 } to { opacity: 1 } }
+
+.modal { background: #fffaf0; border-radius: 24px; width: 100%; max-width: 540px; max-height: calc(100vh - 40px); display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.25); overflow: hidden; }
+.modal > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px 24px 14px; border-bottom: 1px solid var(--line); }
+.modal > header h3 { font-family: 'DM Serif Display', serif; font-size: 22px; font-weight: 400; margin: 4px 0 0; letter-spacing: -.02em; }
+.modal > header .eyebrow { font-size: 10px; }
+.icon-only { padding: 8px; border-radius: 50%; aspect-ratio: 1; }
+
+.picker-search { padding: 14px 24px 6px; }
+.picker-search input { width: 100%; border: 1px solid var(--line); background: rgba(255,253,248,.7); border-radius: 12px; padding: 10px 14px; font-size: 14px; font: inherit; color: inherit; }
+.picker-search input:focus { outline: 2px solid var(--orange); outline-offset: 1px; border-color: transparent; }
+
+.picker-tabs { display: flex; gap: 6px; padding: 4px 24px 12px; overflow-x: auto; border-bottom: 1px solid var(--line); }
+.picker-tabs button { background: transparent; border: 0; padding: 8px 14px; border-radius: 999px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.picker-tabs button:hover { background: rgba(220,165,49,.08); color: var(--ink); }
+.picker-tabs button.active { background: var(--ink); color: #fff; }
+.picker-tabs .count { background: rgba(255,255,255,.18); border-radius: 999px; padding: 1px 7px; font-size: 11px; }
+.picker-tabs button:not(.active) .count { background: rgba(75,55,35,.12); color: var(--muted); }
+
+.picker-body { flex: 1; overflow-y: auto; padding: 12px 16px; min-height: 200px; }
+.picker-empty { color: var(--muted); font-size: 13px; margin: 12px 8px; line-height: 1.45; }
+.picker-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.picker-list > li { display: flex; align-items: center; gap: 8px; }
+.picker-row { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; cursor: pointer; transition: background .12s; flex: 1; min-width: 0; }
+.picker-row:hover { background: rgba(220,165,49,.06); }
+.picker-row.checked { background: rgba(94,140,90,.08); }
+.picker-row input[type="checkbox"] { margin: 0; accent-color: var(--green); flex-shrink: 0; }
+.picker-row .dish-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.picker-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.picker-row-text b { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-row-text small { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.promote { white-space: nowrap; flex-shrink: 0; padding: 6px 10px; font-size: 11px; border-radius: 8px; background: rgba(255,253,248,.7); border: 1px solid var(--line); color: var(--ink); cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.promote:hover { border-color: var(--orange); color: var(--orange); }
+
+.picker-new { display: flex; flex-direction: column; gap: 14px; padding: 4px 8px; }
+.picker-new .text-field { display: flex; flex-direction: row; gap: 8px; align-items: center; padding: 0; }
+.picker-new input { flex: 1; border: 1px solid var(--line); background: rgba(255,253,248,.7); border-radius: 10px; padding: 10px 14px; font: inherit; color: inherit; }
+.picker-new input:focus { outline: 2px solid var(--orange); outline-offset: 1px; border-color: transparent; }
+
+.picker-footer { border-top: 1px solid var(--line); padding: 14px 24px 18px; display: flex; flex-direction: column; gap: 12px; background: rgba(255,253,248,.5); }
+.picker-chosen { display: flex; flex-direction: column; gap: 6px; }
+.picker-chosen > span { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+.picker-chosen ul { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.picker-chosen li { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 6px; background: rgba(94,140,90,.12); color: #4f7a3f; border-radius: 999px; font-size: 12px; font-weight: 600; }
+.picker-chosen li .dish-dot { width: 8px; height: 8px; border-radius: 50%; }
+.picker-chosen li button { background: transparent; border: 0; color: #4f7a3f; cursor: pointer; padding: 2px; border-radius: 50%; display: grid; place-items: center; }
+.picker-chosen li button:hover { background: rgba(193, 39, 45, .15); color: var(--red); }
+.picker-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.picker-actions .ghost, .picker-actions .primary { padding: 10px 18px; border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.picker-actions .ghost { background: transparent; border: 1px solid var(--line); color: var(--ink); }
+.picker-actions .ghost:hover { background: rgba(0,0,0,.04); }
+.picker-actions .primary { background: var(--ink); border: 1px solid var(--ink); color: #fff; }
+.picker-actions .primary:hover:not(:disabled) { background: #000; }
+.picker-actions .primary:disabled { opacity: .45; cursor: not-allowed; }
+
+/* When the empty canvas suggests one dish, give it a softer border so
+   the user understands the engine is offering, not prescribing. */
+.slot-canvas-card.suggested-active { border-color: var(--orange); }
+.suggest-one svg { color: var(--orange); }
+
+/* link-button helper used across the app (already defined elsewhere? reuse). */
+.link-button { background: transparent; border: 0; padding: 0; color: var(--red); cursor: pointer; font: inherit; text-decoration: underline; text-decoration-color: rgba(193, 39, 45, .35); text-underline-offset: 3px; }
+.link-button:hover { color: #7e1f23; text-decoration-color: var(--red); }
+
+/* =============================================================================
+   Phase H: poll modal + slot tally bars + voter dashboard
+   ========================================================================== */
+
+.hero-copy { align-items: flex-start; }
+.hero-copy .hero-actions { display: flex; gap: 8px; align-items: center; }
+
+/* In-slot running tally — appears when a poll exists for this slot */
+.slot-canvas-card.has-poll { border-color: rgba(157, 61, 44, .35); }
+.slot-tally { background: rgba(193, 39, 45, .04); border: 1px dashed rgba(193, 39, 45, .25); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.slot-tally-header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.slot-tally-header .eyebrow { font-size: 10px; }
+.slot-tally-count { font-size: 12px; color: var(--muted); font-weight: 600; }
+.slot-tally-bars { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.slot-tally-bar { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 12px; padding: 8px 10px; background: rgba(255,253,248,.7); border-radius: 10px; border: 1px solid var(--line); }
+.slot-tally-bar.winning { background: rgba(94,140,90,.12); border-color: var(--green); }
+.slot-tally-bar-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.slot-tally-bar-title b { font-size: 13px; font-weight: 600; }
+.slot-tally-bar-title small { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot-tally-bar-meter { grid-column: 1 / -1; height: 6px; background: rgba(75,55,35,.08); border-radius: 4px; overflow: hidden; }
+.slot-tally-bar-meter i { display: block; height: 100%; background: linear-gradient(90deg, var(--orange), var(--red)); transition: width .3s ease; }
+.slot-tally-bar.winning .slot-tally-bar-meter i { background: linear-gradient(90deg, var(--green), #4f7a3f); }
+.slot-tally-bar-count { font-size: 13px; font-weight: 700; color: var(--ink); }
+
+.slot-finalise-inline { background: var(--green); border: 1px solid var(--green); color: #fff; }
+.slot-finalise-inline:hover { background: #4f7a3f; }
+
+/* ----- Create-poll modal ----- */
+.create-poll-modal { max-width: 620px; }
+.create-poll-body { padding: 16px 20px 18px; max-height: 460px; overflow-y: auto; }
+.create-poll-options { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 12px; }
+.create-poll-option { background: rgba(255,253,248,.7); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.create-poll-option-header { display: grid; grid-template-columns: 24px 1fr auto; align-items: center; gap: 10px; }
+.create-poll-option-rank { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--ink); color: #fff; font-size: 12px; font-weight: 700; }
+.create-poll-option-title { background: transparent; border: 0; padding: 0; font: inherit; color: inherit; cursor: text; text-align: left; min-width: 0; }
+.create-poll-option-title b { font-size: 14px; font-weight: 600; }
+.create-poll-option-title:hover b { color: var(--orange); }
+.create-poll-option-title-input { border: 1px solid var(--orange); border-radius: 6px; padding: 4px 8px; font-size: 14px; font-weight: 600; background: white; font-family: inherit; min-width: 0; width: 100%; }
+.create-poll-option-actions { display: flex; gap: 4px; align-items: center; }
+.create-poll-option-actions button { padding: 4px 8px; font-size: 12px; }
+.create-poll-option-dishes { list-style: none; padding: 0; margin: 0 0 0 34px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--ink); }
+.create-poll-option-dishes li { display: flex; align-items: center; gap: 6px; }
+.create-poll-option-dishes li .dish-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.create-poll-dish-name { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.create-poll-dish-name b { font-size: 12px; font-weight: 600; }
+.create-poll-dish-name small { font-size: 10px; color: var(--muted); }
+.create-poll-dish-name em { color: var(--muted); font-style: italic; }
+.create-poll-add-option {
+  width: 100%; margin-top: 10px; padding: 10px;
+  border: 1px dashed var(--line); border-radius: 12px;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  color: var(--muted); font-size: 13px;
+}
+.create-poll-add-option:hover { color: var(--ink); border-color: var(--orange); background: rgba(255,253,248,.5); }
+.picker-url-preview { display: block; color: var(--muted); font-size: 11px; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+
+/* ----- Voter dashboard ----- */
+.voter-dashboard { max-width: 720px; margin: 0 auto; padding: 24px 16px 80px; }
+.voter-dashboard > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 0 0 24px; }
+.voter-dashboard h1 { font-family: 'DM Serif Display', serif; font-size: clamp(36px, 5vw, 48px); font-weight: 400; line-height: 1; letter-spacing: -.02em; margin: 8px 0 4px; }
+.voter-dashboard header p { color: var(--muted); margin: 0; font-size: 14px; }
+.voter-polls { display: flex; flex-direction: column; gap: 16px; }
+.voter-poll-card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 18px 20px; display: flex; flex-direction: column; gap: 12px; }
+.voter-poll-card > header { display: flex; flex-direction: column; gap: 4px; padding: 0; }
+.voter-poll-card h3 { font-family: 'DM Serif Display', serif; font-size: 22px; font-weight: 400; margin: 0; letter-spacing: -.02em; }
+.voter-poll-card small { color: var(--muted); font-size: 12px; font-weight: 600; }
+.voter-poll-options { display: flex; flex-direction: column; gap: 8px; }
+.voter-poll-option { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px; background: rgba(255,253,248,.7); border: 1px solid var(--line); border-radius: 14px; cursor: pointer; text-align: left; font: inherit; color: inherit; transition: border-color .15s, background .15s, transform .1s; }
+.voter-poll-option:hover:not(:disabled) { border-color: var(--orange); transform: translateY(-1px); }
+.voter-poll-option.mine { border-color: var(--green); background: rgba(94,140,90,.08); }
+.voter-poll-option.closed { opacity: .6; cursor: not-allowed; }
+.voter-poll-option-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.voter-poll-option-head b { font-size: 15px; font-weight: 700; }
+.voter-mine-tag { background: var(--green); color: #fff; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+.voter-poll-option-dishes { color: var(--muted); font-size: 13px; }
+.voter-poll-option-meter { height: 6px; background: rgba(75,55,35,.08); border-radius: 4px; overflow: hidden; }
+.voter-poll-option-meter i { display: block; height: 100%; background: linear-gradient(90deg, var(--orange), var(--red)); transition: width .3s ease; }
+.voter-poll-option-count { font-size: 12px; color: var(--muted); font-weight: 600; }
+
+@media (max-width: 620px) {
+  .hero-copy { flex-direction: column; align-items: flex-start; }
+}

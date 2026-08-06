@@ -119,6 +119,23 @@ export const recordMeal = async (householdId: string, mealId: string, dishes: Di
   if (error) throw error
 }
 
+// Phase F: confirm path for user-picked dishes. The legacy recordMeal takes
+// Dish[] (so the engine's confirmMeal can derive ingredients); manual picks
+// only carry name + an optional source id. Persist with a clear shape so the
+// family tab / history section can render them without a Dish round-trip.
+export const recordManualMeal = async (
+  householdId: string,
+  syntheticMealId: string,
+  picks: { dish_id: string | null; name: string; source: string }[],
+) => {
+  const { error } = await table('meal_history').insert({
+    household_id: householdId,
+    meal_id: syntheticMealId,
+    dishes: picks.map((p) => ({ id: p.dish_id, name: p.name, source: p.source })),
+  })
+  if (error) throw error
+}
+
 export const fetchMealHistory = async (householdId: string, limit = 7): Promise<MealHistoryRow[]> => {
   const { data, error } = await table('meal_history')
     .select('meal_id, dishes, confirmed_at')
@@ -175,6 +192,16 @@ export const generateAndSetJoinCode = async (hh: Household): Promise<Household> 
 
 export type MealSlot = 'BREAKFAST' | 'LUNCH' | 'DINNER'
 
+// Source of a dish in a meal_plans.manual_dishes entry. Drives how the
+// picker renders the row (icon, link to source record, delete semantics).
+export type ManualDishSource = 'user_meal' | 'household_meal' | 'curated' | 'adhoc'
+
+export type ManualDish = {
+  dish_id: string | null  // null only for source='adhoc'
+  name: string
+  source: ManualDishSource
+}
+
 export type MealPlan = {
   id: string
   household_id: string
@@ -182,6 +209,7 @@ export type MealPlan = {
   slot: MealSlot
   meal_id: string | null
   excluded_dishes: string[]  // dish names the user toggled off in the editor
+  manual_dishes: ManualDish[]  // user-picked dishes for this slot (Phase F)
   confirmed_at: string | null
   created_at: string
   updated_at: string
@@ -202,6 +230,7 @@ export const upsertMealPlan = async (
   slot: MealSlot,
   mealId: string | null,
   excludedDishes: string[] = [],
+  manualDishes: ManualDish[] = [],
 ) => {
   const { data, error } = await table('meal_plans')
     .upsert({
@@ -210,11 +239,38 @@ export const upsertMealPlan = async (
       slot,
       meal_id: mealId,
       excluded_dishes: excludedDishes,
+      manual_dishes: manualDishes,
       updated_at: new Date().toISOString(),
     }, { onConflict: 'household_id,plan_date,slot' })
     .select('*')
   if (error) throw error
   return data?.[0] as MealPlan
+}
+
+// Phase F: replace just the manual_dishes array on a slot's plan row.
+// Used by the Today slot picker — much smaller payload than upsertMealPlan
+// and avoids accidentally clobbering meal_id / excluded_dishes.
+export const setMealPlanManualDishes = async (
+  householdId: string,
+  isoDate: string,
+  slot: MealSlot,
+  manualDishes: ManualDish[],
+): Promise<MealPlan> => {
+  // Use upsert with onConflict so this works even when the slot has no
+  // existing plan row yet (e.g., fresh day, nothing planned).
+  const { data, error } = await table('meal_plans')
+    .upsert({
+      household_id: householdId,
+      plan_date: isoDate,
+      slot,
+      meal_id: null,  // user is manually picking — drop any engine-set meal_id
+      manual_dishes: manualDishes,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'household_id,plan_date,slot' })
+    .select('*')
+    .single()
+  if (error) throw error
+  return data as MealPlan
 }
 
 export const confirmMealPlan = async (householdId: string, isoDate: string, slot: MealSlot) => {
@@ -393,6 +449,56 @@ export const deleteUserMeal = async (id: string) => {
 }
 
 // ============================================================================
+// Phase E: composed meals (multiple dishes in one recommended meal).
+// One row in `household_meals` = one composed meal. Each composed meal
+// has 1..n dishes. The client renders the meals alongside the curated
+// and single-dish user_meals in the Today tab.
+// ============================================================================
+
+export type HouseholdMeal = {
+  id: string
+  household_id: string
+  name: string                  // meal title (e.g. "Cucumber + Salad + Anda Bhurji + Roti")
+  description: string           // subtitle
+  slot: 'BREAKFAST' | 'LUNCH' | 'DINNER' | null
+  dishes: { id: string; name: string }[]   // 1..n dishes, by seed id (or custom UUID)
+  match_count: number           // 0..100, set by the App before save
+  created_at: string
+  updated_at: string
+}
+
+export const fetchHouseholdMeals = async (householdId: string): Promise<HouseholdMeal[]> => {
+  const { data, error } = await table('household_meals')
+    .select('*')
+    .eq('household_id', householdId)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  return (data ?? []) as HouseholdMeal[]
+}
+
+export const addHouseholdMeal = async (householdId: string, meal: Omit<HouseholdMeal, 'id' | 'household_id' | 'created_at' | 'updated_at'>): Promise<HouseholdMeal> => {
+  const row = { household_id: householdId, ...meal }
+  const { data, error } = await table('household_meals').insert(row).select('*').single()
+  if (error) throw error
+  return data as HouseholdMeal
+}
+
+export const updateHouseholdMeal = async (id: string, patch: Partial<Omit<HouseholdMeal, 'id' | 'household_id' | 'created_at'>>): Promise<HouseholdMeal> => {
+  const { data, error } = await table('household_meals')
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select('*')
+    .single()
+  if (error) throw error
+  return data as HouseholdMeal
+}
+
+export const deleteHouseholdMeal = async (id: string) => {
+  const { error } = await table('household_meals').delete().eq('id', id)
+  if (error) throw error
+}
+
+// ============================================================================
 // Reset household data — atomic wipe of operational rows, household kept
 // ============================================================================
 
@@ -460,4 +566,144 @@ export const deleteDishOverride = async (householdId: string, dishId: string) =>
     .eq('household_id', householdId)
     .eq('dish_id', dishId)
   if (error) throw error
+}
+
+// ============================================================================
+// Phase H: meal_polls — per-day, per-slot candidate bundles for voting.
+//
+// The owner pre-bundles N options (2..6), sends the join URL to voters, and
+// voters each pick one option. The winning option's dishes get adopted as
+// the slot's manual_dishes when the owner finalises.
+// ============================================================================
+
+export type PollOption = {
+  id: string
+  title: string
+  dishes: ManualDish[]
+}
+
+export type MealPoll = {
+  id: string
+  household_id: string
+  plan_date: string
+  slot: MealSlot
+  options: PollOption[]
+  closed_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export const upsertPoll = async (
+  householdId: string,
+  isoDate: string,
+  slot: MealSlot,
+  options: PollOption[],
+): Promise<MealPoll> => {
+  const { data, error } = await table('meal_polls')
+    .upsert({
+      household_id: householdId,
+      plan_date: isoDate,
+      slot,
+      options,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'household_id,plan_date,slot' })
+    .select('*')
+    .single()
+  if (error) throw error
+  return data as MealPoll
+}
+
+export const fetchPollsForDay = async (householdId: string, isoDate: string): Promise<MealPoll[]> => {
+  const { data, error } = await table('meal_polls')
+    .select('*')
+    .eq('household_id', householdId)
+    .eq('plan_date', isoDate)
+  if (error) throw error
+  return (data ?? []) as MealPoll[]
+}
+
+export const fetchPollById = async (pollId: string): Promise<MealPoll | null> => {
+  const { data, error } = await table('meal_polls').select('*').eq('id', pollId).maybeSingle()
+  if (error) throw error
+  return data as MealPoll | null
+}
+
+export const closePoll = async (pollId: string) => {
+  const { error } = await table('meal_polls')
+    .update({ closed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq('id', pollId)
+  if (error) throw error
+}
+
+// Hard-delete a poll + its votes (owner-only). Used when the owner hits
+// "Delete poll" — they don't want the artefact lingering, and any votes
+// cast against it should disappear too. Vote rows are FK-linked without
+// ON DELETE CASCADE (v0 schema), so we delete votes explicitly first.
+export const deletePoll = async (pollId: string) => {
+  // Best-effort: try to delete votes first. If the votes table isn't
+  // accessible to the anon role (RLS), this errors silently — but the
+  // meal_polls DELETE will still succeed and the orphan votes become
+  // harmless dead rows.
+  try { await table('votes').delete().eq('poll_id', pollId) } catch { /* ignore */ }
+  const { error } = await table('meal_polls').delete().eq('id', pollId)
+  if (error) throw error
+}
+
+// Cast a vote for a specific poll option. Returns the upserted row.
+// voters.cast vote via their auth'd voter id (selected from localStorage
+// or by re-entering their name on this device).
+export const upsertPollVote = async (
+  householdId: string,
+  voterId: string,
+  pollId: string,
+  optionId: string,
+) => {
+  // votes.meal_id encodes `<poll_id>:opt:<option_id>` so the votes table
+  // doesn't need a separate poll_options table. Cast as one vote per
+  // (voter_id, poll_date) so a voter can change their pick.
+  const pollDate = new Date().toISOString().slice(0, 10)
+  const mealId = `poll-${pollId}:opt:${optionId}`
+  const { error } = await table('votes').upsert(
+    { household_id: householdId, voter_id: voterId, meal_id: mealId, poll_date: pollDate },
+    { onConflict: 'voter_id,poll_date' },
+  )
+  if (error) throw error
+}
+
+// Returns the {voterId → optionId} map for a given poll. Voters use this
+// to render who voted for what on the ballot. Owners use this to render
+// the running tally on the Today slot card.
+export const fetchPollTally = async (pollId: string): Promise<Record<string, string>> => {
+  // Tally is derived from the votes table. We rely on the format above
+  // and the fact that the votes.meal_id for this household + today's date
+  // covers all open polls simultaneously — same meal_id encoding across
+  // polls would collide. We narrow by joining on the meal_id LIKE pattern.
+  // supabase-js doesn't expose LIKE directly via .eq() so we use .like().
+  const today = new Date().toISOString().slice(0, 10)
+  const { data, error } = await table('votes')
+    .select('voter_id, meal_id, poll_date')
+    .like('meal_id', `poll-${pollId}:opt:%`)
+    .eq('poll_date', today)
+  if (error) throw error
+  const out: Record<string, string> = {}
+  for (const row of data ?? []) {
+    const m = /^poll-[^:]+:opt:(.+)$/.exec(row.meal_id)
+    if (m) out[row.voter_id] = m[1]
+  }
+  return out
+}
+
+// Find a voter by name in a household. Used by the VoterDashboard to look
+// up the voter's id once they re-enter their name on a new device. We
+// don't auth the joiner via Supabase auth — we trust the household's
+// owner + the voter's name pairing because the join flow already created
+// the voter row.
+export const findVoterByName = async (householdId: string, name: string): Promise<{ id: string; name: string; invite_code: string } | null> => {
+  const { data, error } = await table('voters')
+    .select('id, name, invite_code')
+    .eq('household_id', householdId)
+    .ilike('name', name.trim())
+    .maybeSingle()
+  if (error) throw error
+  return data
 }

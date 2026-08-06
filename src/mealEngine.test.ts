@@ -88,6 +88,56 @@ describe('recommendMeals', () => {
     expect(egg?.name).toBe('Anda Bhurji (light)')
     expect(egg?.time).toBe(12)
   })
+
+  it('surfaces Phase E composed meals alongside the curated options', () => {
+    const composed = [{
+      id: 'cm-1',
+      name: 'Cucumber + Salad + Anda Bhurji + Roti',
+      slot: 'DINNER' as const,
+      dishes: [
+        { id: 'cucumber', name: 'Cucumber' },
+        { id: 'salad', name: 'Salad' },
+        { id: 'egg-bhurji', name: 'Anda Bhurji' },
+        { id: 'roti', name: 'Ghar ki Roti' },
+      ],
+      match_count: 80,
+    }]
+    const meals = recommendMeals({ suggestionCount: 3, dishesPerMeal: 2, vegetarian: false }, [], [], {}, 'DINNER', composed)
+    // First option is the composed meal, then the 3 auto-bundled.
+    expect(meals[0].id).toBe('composed-cm-1')
+    expect(meals[0].title).toBe('Cucumber + Salad + Anda Bhurji + Roti')
+    expect(meals[0].isCustom).toBe(true)
+    expect(meals[0].customId).toBe('cm-1')
+    expect(meals[0].dishes.map((d) => d.id)).toEqual(['cucumber', 'salad', 'egg-bhurji', 'roti'])
+    expect(meals.length).toBe(1 + 3)
+  })
+
+  it('filters composed meals by slot when one is set on the row', () => {
+    const composed = [
+      { id: 'cm-1', name: 'Breakfast Bowl', slot: 'BREAKFAST' as const, dishes: [{ id: 'poha', name: 'Poha' }], match_count: 90 },
+      { id: 'cm-2', name: 'Dinner Plate',   slot: 'DINNER' as const,    dishes: [{ id: 'roti', name: 'Roti' }], match_count: 80 },
+    ]
+    const dinner = recommendMeals({ suggestionCount: 2, dishesPerMeal: 2, vegetarian: true }, [], [], {}, 'DINNER', composed)
+    // Only the dinner composed meal surfaces — breakfast is filtered out.
+    expect(dinner.filter((m) => m.isCustom).map((m) => m.id)).toEqual(['composed-cm-2'])
+  })
+
+  it('composed meals without a slot tag surface in any slot', () => {
+    const composed = [{ id: 'cm-1', name: 'Any Slot', slot: null, dishes: [{ id: 'poha', name: 'Poha' }], match_count: 90 }]
+    const dinner = recommendMeals({ suggestionCount: 2, dishesPerMeal: 2, vegetarian: true }, [], [], {}, 'DINNER', composed)
+    const breakfast = recommendMeals({ suggestionCount: 2, dishesPerMeal: 2, vegetarian: true }, [], [], {}, 'BREAKFAST', composed)
+    expect(dinner.filter((m) => m.isCustom).length).toBe(1)
+    expect(breakfast.filter((m) => m.isCustom).length).toBe(1)
+  })
+
+  it('composed meals still appear when the curated pool is empty (fallback path)', () => {
+    // Vegetarian + composed-meal-only path: empty kitchen → no curated
+    // dishes ranked, but the composed meal must still surface.
+    const composed = [{ id: 'cm-1', name: 'Cucumber Plate', slot: null, dishes: [{ id: 'cucumber', name: 'Cucumber' }], match_count: 80 }]
+    const meals = recommendMeals({ suggestionCount: 3, dishesPerMeal: 2, vegetarian: true }, [], [], {}, null, composed)
+    expect(meals[0].isCustom).toBe(true)
+    expect(meals[0].id).toBe('composed-cm-1')
+  })
 })
 
 describe('applyDishOverrides', () => {
