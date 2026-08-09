@@ -707,3 +707,50 @@ export const findVoterByName = async (householdId: string, name: string): Promis
   if (error) throw error
   return data
 }
+
+// ---------------------------------------------------------------------------
+// Anon-safe RPC wrappers (migration 0017).
+//
+// These replace direct SELECTs on voters / meal_polls from any future anon
+// voter landing flow. Each one takes a join_code and resolves to a single
+// household inside SECURITY DEFINER; anon callers can never enumerate other
+// households because the join_code is the gate and we don't expose anything
+// but the targeted slice.
+//
+// Today's join flow has voters sign in with Google before accessing the app,
+// so these RPCs aren't called yet — but they're here for the next iteration
+// (true anon voter view, no Google required) and as defence in depth in case
+// the 0017 SQL is applied before any consumer code lands.
+// ---------------------------------------------------------------------------
+
+export type AnonVoter = { id: string; name: string }
+
+// Returns the voter roster for the household whose join_code matches.
+// Empty array if the code is unknown (don't distinguish "no such code"
+// from "empty roster" — no enumeration oracle).
+export const fetchVoterRosterByJoinCodeAnon = async (joinCode: string): Promise<AnonVoter[]> => {
+  const { data, error } = await supabase.rpc('anon_lookup_voters_by_join_code', { p_code: joinCode })
+  if (error) throw error
+  return (data ?? []) as AnonVoter[]
+}
+
+// Returns the open poll for the household tied to joinCode on isoDate
+// (YYYY-MM-DD), or null if none open / code invalid.
+export const fetchTodayPollAnon = async (joinCode: string, isoDate: string): Promise<MealPoll | null> => {
+  const { data, error } = await supabase.rpc('anon_fetch_today_poll', { p_code: joinCode, p_date: isoDate })
+  if (error) throw error
+  const rows = (data ?? []) as MealPoll[]
+  return rows[0] ?? null
+}
+
+// Returns {voter_id → option_id} for the household's open poll on isoDate.
+// Empty object if the code is invalid or no open poll exists.
+export const fetchTodayTallyAnon = async (joinCode: string, isoDate: string): Promise<Record<string, string>> => {
+  const { data, error } = await supabase.rpc('anon_fetch_today_tally', { p_code: joinCode, p_date: isoDate })
+  if (error) throw error
+  const out: Record<string, string> = {}
+  for (const row of (data ?? []) as Array<{ voter_id: string; option_id: string }>) {
+    out[row.voter_id] = row.option_id
+  }
+  return out
+}
