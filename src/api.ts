@@ -754,3 +754,37 @@ export const fetchTodayTallyAnon = async (joinCode: string, isoDate: string): Pr
   }
   return out
 }
+
+// Cast a vote as an anonymous user (no Google sign-in). Takes the
+// voter's display name (case-insensitive exact match against the
+// household's voters.name) and the option they're picking. The RPC
+// handles voter lookup + closed-poll check + option validation in
+// SECURITY DEFINER, so this client never touches the voters or votes
+// tables directly. Returns the {voter_id, option_id} the server
+// recorded — caller can use this to refresh its local tally.
+//
+// Throws on:
+//   * unknown join_code   (Postgres exception 'unknown join_code')
+//   * unknown voter name  (Postgres exception 'unknown voter name')
+//   * poll already closed (Postgres exception 'poll is closed')
+//   * invalid option_id   (Postgres exception 'invalid option')
+//
+// The RPC returns the exception text in `error.message` for these —
+// the caller (VoterLanding) maps them to user-friendly copy.
+export const castVoteAnon = async (
+  joinCode: string,
+  voterName: string,
+  pollId: string,
+  optionId: string,
+): Promise<{ voter_id: string; option_id: string }> => {
+  const { data, error } = await supabase.rpc('anon_cast_vote_by_name', {
+    p_code: joinCode,
+    p_voter_name: voterName,
+    p_poll_id: pollId,
+    p_option_id: optionId,
+  })
+  if (error) throw error
+  const row = (data ?? []) as Array<{ voter_id: string; option_id: string }>
+  if (row.length === 0) throw new Error('vote_not_recorded')
+  return row[0]
+}

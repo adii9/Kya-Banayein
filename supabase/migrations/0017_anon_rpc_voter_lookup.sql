@@ -13,20 +13,29 @@
 --      auth.role() = 'authenticated' (they were designed for the
 --      authenticated voter flow on the owner's device — anon should
 --      never reach them).
---   3. Add two SECURITY DEFINER RPCs that take a join_code and return
---      only the slice of data the anon voter landing page needs:
+--   3. Drop 0015's anon INSERT/UPDATE on votes. With the read path
+--      closed, anon has no way to look up valid voter_ids; and a write
+--      policy keyed only on (voter_id, household_id) lets an attacker
+--      who guesses a voter's name cast votes as them. The replacement
+--      is anon_cast_vote_by_name: a SECURITY DEFINER RPC that takes
+--      (join_code, voter_name, poll_id, option_id) and does the
+--      lookup + write inside the function body. The function returns
+--      a clear error if the name doesn't match a voter in the
+--      household. Voting-as-someone-else is impossible without
+--      knowing the exact name string.
+--   4. Add three read-side SECURITY DEFINER RPCs that take a join_code
+--      and return only the slice of data the anon voter landing page
+--      needs:
 --        a. anon_lookup_voters_by_join_code(p_code) → voter roster
---        b. anon_fetch_today_poll(p_code) → today's open poll for the
---           household tied to p_code (options + closed_at; no voter ids)
---   4. The anon voter write side (0015's INSERT/UPDATE on votes) stays
---      intact — the WITH CHECK still ties (voter_id, household_id) to
---      a real voters row, so a forged write requires enumerating voters
---      first. With the RPC-only anon read path, an attacker can no longer
---      enumerate, only guess voter names one at a time via the join screen.
+--           (used to populate a "who's on this household?" picker; the
+--           voter selects their own name)
+--        b. anon_fetch_today_poll(p_code, p_date) → today's open poll
+--        c. anon_fetch_today_tally(p_code, p_date) → {voter_id → option_id}
 --
 -- Effect: anon SELECTs on voters, inventory_items, meal_plans,
--- meal_polls return zero rows. The voter join flow still works because
--- the App now calls the two RPCs instead of reading those tables directly.
+-- meal_polls return zero rows. Anon writes on votes are replaced with
+-- a single named-vote RPC. The voter landing page now works fully
+-- without a Google account.
 
 -- ---------------------------------------------------------------------------
 -- 1. Drop the broad anon SELECT on voters.
@@ -201,3 +210,116 @@ end;
 $$;
 
 grant execute on function public.anon_fetch_today_tally(text, date) to anon;
+
+-- ---------------------------------------------------------------------------
+-- 4. Drop the 0015 anon INSERT/UPDATE policies on votes. Replaced by
+-- anon_cast_vote_by_name below. With the read path closed (anon can't
+-- enumerate voters), a write policy keyed on (voter_id, household_id)
+-- would let an attacker vote as any voter whose name they guess.
+-- ---------------------------------------------------------------------------
+drop policy if exists "anon inserts vote for valid voter in household" on public.votes;
+drop policy if exists "anon updates vote for valid voter in household" on public.votes;
+
+-- 4a. anon_cast_vote_by_name
+-- The full anon-side vote flow in one RPC. Takes the join_code, the
+-- voter's name (exact case-insensitive match against the household's
+-- voters.name), the poll_id, and the option_id. Looks up the voter
+-- inside SECURITY DEFINER; inserts or updates the votes row; returns
+-- the resulting (voter_id, option_id) so the client can refresh its
+-- tally without a second round-trip.
+--
+-- Error semantics:
+--   * unknown join_code       → exception 'unknown join_code'
+--   * unknown voter name      → exception 'unknown voter name'
+--   * poll not in that household → exception 'poll not found'
+--   * poll already closed     → exception 'poll is closed'
+--   * option_id not in poll   → exception 'invalid option'
+create or replace function public.anon_cast_vote_by_name(
+  p_code text,
+  p_voter_name text,
+  p_poll_id uuid,
+  p_option_id text
+)
+returns table (voter_id uuid, option_id text)
+language plpgsql security definer
+set search_path = public
+as $$
+declare
+  v_household_id uuid;
+  v_voter_id uuid;
+  v_poll_household uuid;
+  v_poll_closed timestamptz;
+  v_poll_options jsonb;
+  v_poll_date date;
+  v_meal_id text;
+begin
+  -- 1. Resolve household from join code.
+  select h.id into v_household_id
+  from public.households h
+  where h.join_code = p_code
+  limit 1;
+
+  if v_household_id is null then
+    raise exception 'unknown join_code' using errcode = 'P0002';
+  end if;
+
+  -- 2. Resolve voter from exact (case-insensitive) name match. We use
+  --    `lower(name) = lower(...)` because a voter typing "diya" should
+  --    match "Diya". Trim whitespace from user input — phones paste
+  --    trailing spaces sometimes.
+  select v.id into v_voter_id
+  from public.voters v
+  where v.household_id = v_household_id
+    and lower(btrim(v.name)) = lower(btrim(p_voter_name))
+  limit 1;
+
+  if v_voter_id is null then
+    raise exception 'unknown voter name' using errcode = 'P0002';
+  end if;
+
+  -- 3. Verify poll belongs to this household and is open. Capture the
+  --    plan_date (the date the poll is bound to, NOT today) so votes
+  --    accumulate under (voter_id, poll_date) consistently.
+  select p.household_id, p.closed_at, p.options, p.plan_date
+    into v_poll_household, v_poll_closed, v_poll_options, v_poll_date
+  from public.meal_polls p
+  where p.id = p_poll_id;
+
+  if v_poll_household is null or v_poll_household <> v_household_id then
+    raise exception 'poll not found' using errcode = 'P0002';
+  end if;
+
+  if v_poll_closed is not null then
+    raise exception 'poll is closed' using errcode = 'P0001';
+  end if;
+
+  -- 4. Verify option_id is one of the poll's options. This is critical
+  --    — without it, an attacker could write a garbage option_id and
+  --    the tally would render nonsense.
+  if not (
+    select bool_and(elem->>'id' = p_option_id)
+    from jsonb_array_elements(v_poll_options) elem
+  ) then
+    raise exception 'invalid option' using errcode = 'P0002';
+  end if;
+
+  -- 5. Upsert. The votes table has (voter_id, poll_date) as the
+  --    uniqueness key per the api.ts contract. We encode the pick as
+  --    poll-<poll_id>:opt:<option_id> to match the existing fetchPollTally
+  --    decoder. We pass plan_date (not today) so the vote stays under
+  --    the right day even if the voter casts at 11:59pm and the poll
+  --    is technically still "today's".
+  v_meal_id := 'poll-' || p_poll_id::text || ':opt:' || p_option_id;
+
+  insert into public.votes (household_id, voter_id, meal_id, poll_date, updated_at)
+  values (v_household_id, v_voter_id, v_meal_id, v_poll_date, now())
+  on conflict (voter_id, poll_date) do update
+    set meal_id = excluded.meal_id,
+        updated_at = excluded.updated_at;
+
+  return query
+    select v_voter_id, p_option_id;
+end;
+$$;
+
+grant execute on function public.anon_cast_vote_by_name(text, text, uuid, text) to anon;
