@@ -732,7 +732,7 @@ export const findVoterByName = async (householdId: string, name: string): Promis
 // the 0017 SQL is applied before any consumer code lands.
 // ---------------------------------------------------------------------------
 
-export type AnonVoter = { id: string; name: string }
+export type AnonVoter = { id: string; name: string; invite_code: string }
 
 // Returns the voter roster for the household whose join_code matches.
 // Empty array if the code is unknown (don't distinguish "no such code"
@@ -792,6 +792,31 @@ export const castVoteAnon = async (
     p_poll_id: pollId,
     p_option_id: optionId,
   })
+  if (error) throw error
+  const row = (data ?? []) as Array<{ voter_id: string; option_id: string }>
+  if (row.length === 0) throw new Error('vote_not_recorded')
+  return row[0]
+}
+
+// Token-bound vote cast. Use this when the share URL includes a
+// per-voter token (?join=<code>&voter=<invite_code>) so the recipient
+// is already identified and the name picker can be skipped. The RPC
+// (anon_cast_vote_by_token, migration 0018) resolves the voter from
+// the token inside SECURITY DEFINER — same idea as castVoteAnon but
+// the voter lookup is by token, not by name.
+export const castVoteAnonByToken = async (
+  joinCode: string,
+  voterToken: string,
+  pollId: string,
+  optionId: string,
+): Promise<{ voter_id: string; option_id: string }> => {
+  const { data, error } = await supabase.rpc('anon_cast_vote_by_token', {
+    p_code: joinCode,
+    p_voter_token: voterToken,
+    p_poll_id: pollId,
+    p_option_id: optionId,
+  })
+
   if (error) throw error
   const row = (data ?? []) as Array<{ voter_id: string; option_id: string }>
   if (row.length === 0) throw new Error('vote_not_recorded')

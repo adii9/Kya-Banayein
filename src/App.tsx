@@ -9,7 +9,7 @@ type InventoryItem = mealEngine.InventoryItem
 type MealOption = mealEngine.MealOption
 type UserDish = mealEngine.UserDish
 import { parseCommand, SUPPORTED_LANGS, type ChatIntent } from './chatBot'
-import { addVoter as _addVoter, buildWhatsAppShareUrl, castVote as _castVote, createPoll, type Poll } from './voting'
+import { addVoter as _addVoter, buildWhatsAppShareUrl, castVote as _castVote, createPoll, perVoterShareUrl, type Poll } from './voting'
 import { istDateKey } from './dates'
 import { supabase, APP_BASE_URL } from './supabase'
 import * as api from './api'
@@ -840,7 +840,7 @@ function App() {
   const [srSupported, setSrSupported] = useState(true)
   const recognitionRef = useRef<SpeechRecognition | null>(null)
   const [voting, setVoting] = useState<VotingState>(() => load('kya-voting', DEFAULT_VOTING))
-  const [voterIndex, setVoterIndex] = useState<Record<string, string>>({})
+  const [, setVoterIndex] = useState<Record<string, string>>({})
   const [voters, setVoters] = useState<api.Voter[]>([])
   const [voterPreferences, setVoterPreferences] = useState<api.VoterMealPreference[]>([])
   const [mealHistory, setMealHistory] = useState<api.MealHistoryRow[]>([])
@@ -1354,14 +1354,14 @@ function App() {
     })
   }
 
-  const voteShareText = (name: string) => {
+  const voteShareText = (voter: { name: string; invite_code: string }) => {
     const options = mealOptions.map((m, i) => `${i + 1}. ${m.title} (${m.dishes.map((d) => d.name).join(' + ')})`).join('\n')
-    // Use the join_code (not the household UUID). The App reads
-    // ?join=<code> from URL params on mount; the old text wrote
-    // ?household=<uuid> which the app ignored and the recipient
-    // landed on Today without ever seeing the JoinScreen.
+    // Per-voter URL: join_code + voter token. The recipient opens the
+    // link, VoterLanding reads the ?voter=<token> param, skips the
+    // name picker, and the vote RPC matches by token. Recipients can
+    // only cast as the voter named in the link — no impersonation.
     const joinUrl = household?.join_code
-      ? `${APP_BASE_URL}/?join=${household.join_code}`
+      ? perVoterShareUrl(APP_BASE_URL, household.join_code, voter.invite_code)
       : `${APP_BASE_URL}/`
     // B13 fix: the sender's household filter applies here, so a pure-veg
     // sender already shared a veg-only list. But a non-veg sender's
@@ -1370,7 +1370,7 @@ function App() {
     const vegNote = preferences.vegetarian
       ? 'Pure vegetarian list.'
       : 'Includes non-veg options. Adjust your veg preference on the Today tab if needed.'
-    return `🍛 Aaj dinner vote karo!\n\n${vegNote}\n\nOpen this link on your phone:\n${joinUrl}\n\nAapka naam: ${name}\nPick the option you want. No login needed — just type your name when it opens.\n\nOptions:\n${options}`
+    return `🍛 Aaj dinner vote karo!\n\n${vegNote}\n\nOpen this link on your phone:\n${joinUrl}\n\nAapka naam: ${voter.name}\nPick the option you want. No login needed — your name is already attached to the link.\n\nOptions:\n${options}`
   }
 
   const shareOnWhatsApp = (text: string) => window.open(buildWhatsAppShareUrl(text), '_blank', 'noopener')
@@ -1397,7 +1397,7 @@ function App() {
   if (typeof window !== 'undefined') {
     const params = new URLSearchParams(window.location.search)
     const joinCode = params.get('join')
-    if (joinCode) return <VoterLanding joinCode={joinCode} />
+    if (joinCode) return <VoterLanding joinCode={joinCode} voterToken={params.get('voter') ?? undefined} />
   }
 
   if (!session) return <SignIn />
@@ -1434,7 +1434,9 @@ function App() {
   />
   if (!household || forceOnboarding) return <KitchenOnboarding session={session} forceOnboarding={forceOnboarding} currentSuggestionCount={preferences.suggestionCount} currentDishesPerMeal={preferences.dishesPerMeal} onComplete={(hh) => { setHousehold(hh); setForceOnboarding(false); setTab('today') }} />
 
-  const voterList = Object.entries(voterIndex).map(([name, id]) => ({ name, id, code: id.slice(0, 5).toUpperCase() }))
+  // Cheap, but used in the render path so stay readable. Pulls from
+  // voters (with invite_code) so the share link can be per-voter.
+  const voterList = voters.map((v) => ({ name: v.name, id: v.id, invite_code: v.invite_code }))
 
   // Owners can preview the voter experience to sanity-check the poll
   // they just sent, even if they're alone. Sets voterViewOpen; the modal
@@ -1478,7 +1480,11 @@ function App() {
               {voting.enabled && voterList.length > 0 && <button
                 className="slot-share"
                 aria-label={`Share ${s.toLowerCase()} voting link`}
-                onClick={() => shareOnWhatsApp(voteShareText(voterList[0]?.name ?? ''))}
+                onClick={() => {
+                  const v = voterList[0]
+                  if (!v) return
+                  shareOnWhatsApp(voteShareText({ name: v.name, invite_code: v.invite_code }))
+                }}
               >
                 <Share2 size={13} />
               </button>}
@@ -3585,16 +3591,27 @@ function VoterDashboard(props: VoterDashboardProps) {
 
 type VoterLandingProps = {
   joinCode: string
+  // Optional per-voter token. When present, the recipient is
+  // pre-identified and the name picker is skipped. Sourced from the
+  // URL's ?voter= query param. Token is the voter's invite_code
+  // (5 chars, 32-char unambiguous alphabet, generated on voter
+  // creation). Missing/empty falls back to the name picker.
+  voterToken?: string
 }
 
-function VoterLanding({ joinCode }: VoterLandingProps) {
+function VoterLanding({ joinCode, voterToken }: VoterLandingProps) {
   const [household, setHousehold] = useState<{ id: string; name: string } | null>(null)
   const [roster, setRoster] = useState<api.AnonVoter[]>([])
   const [poll, setPoll] = useState<api.MealPoll | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [name, setName] = useState('')
-  const [voter, setVoter] = useState<{ id: string; name: string } | null>(null)
+  // The voterToken here is the per-voter invite_code used to bind
+  // the share link. Set when the URL has ?voter= or when the user
+  // picks from the roster. handleVote uses it to call the token-bound
+  // RPC (castVoteAnonByToken) which is the only way to guarantee the
+  // recipient can't vote as someone else.
+  const [voter, setVoter] = useState<{ id: string; name: string; invite_code: string } | null>(null)
   const [tally, setTally] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState(false)
   const [castError, setCastError] = useState<string | null>(null)
@@ -3618,30 +3635,55 @@ function VoterLanding({ joinCode }: VoterLandingProps) {
         }
         setHousehold(hh)
 
-        // Try to recognise a returning voter on this device. If we have
-        // their id stored, skip the name picker.
-        try {
-          const raw = window.localStorage.getItem(storageKey)
-          if (raw) {
-            const parsed = JSON.parse(raw) as { id: string; name: string }
-            setVoter(parsed)
-            setName(parsed.name)
-          }
-        } catch { /* ignore */ }
-
-        // Fetch today's open poll for the household. RPC returns null
-        // if no poll exists for today (or the code is invalid — but we
-        // already validated that above).
-        const p = await api.fetchTodayPollAnon(joinCode, todayKey)
-        if (cancelled) return
-        setPoll(p)
-
-        // Always fetch the roster, even if the voter is recognised — we
-        // use it to validate the stored voter id still matches someone
-        // in the household (owner may have removed the voter since).
-        const r = await api.fetchVoterRosterByJoinCodeAnon(joinCode)
+        // Fetch today's open poll (RPC returns null if no poll exists)
+        // and the voter roster. We need the roster before we can decide
+        // whether the URL token is valid.
+        const [p, r] = await Promise.all([
+          api.fetchTodayPollAnon(joinCode, todayKey),
+          api.fetchVoterRosterByJoinCodeAnon(joinCode),
+        ])
         if (cancelled) return
         setRoster(r)
+        if (p) setPoll(p)
+
+        // Voter's identity resolve order:
+        //   1. URL ?voter= token (token-bound share link — most specific)
+        //   2. localStorage row (returning voter on this device)
+        //   3. name picker (no recognition at all)
+        //
+        // Token wins because the link is the canonical recipient identity.
+        // If the token doesn't match anyone in the roster, we fall through
+        // to localStorage (which may still know the voter) and otherwise
+        // surface a clear error — the link is bound but the voter is gone.
+        let resolvedVoter: { id: string; name: string; invite_code: string } | null = null
+
+        if (voterToken) {
+          const m = r.find((rv) => rv.invite_code?.toUpperCase() === voterToken.toUpperCase())
+          if (m) resolvedVoter = { id: m.id, name: m.name, invite_code: m.invite_code }
+        }
+
+        if (!resolvedVoter) {
+          try {
+            const raw = window.localStorage.getItem(storageKey)
+            if (raw) {
+              const parsed = JSON.parse(raw) as { id: string; name: string; invite_code?: string }
+              // Validate against the live roster — owner may have removed the voter.
+              const live = r.find((rv) => rv.id === parsed.id)
+              if (live) resolvedVoter = { id: live.id, name: live.name, invite_code: live.invite_code }
+            }
+          } catch (e) { console.warn('Restore voter identity failed:', e) }
+        }
+
+        if (resolvedVoter) {
+          setVoter(resolvedVoter)
+          setName(resolvedVoter.name)
+        } else if (voterToken) {
+          // Token was present but didn't match anyone — the link is
+          // stale (owner removed the voter) or the URL got mangled.
+          // Don't silently show the name picker: surface it so the
+          // recipient knows the link is wrong.
+          setError("This voting link is for someone who's no longer on the household. Ask the owner to send a new one.")
+        }
 
         if (p) {
           const t = await api.fetchTodayTallyAnon(joinCode, todayKey)
@@ -3663,7 +3705,7 @@ function VoterLanding({ joinCode }: VoterLandingProps) {
       }
     })()
     return () => { cancelled = true }
-  }, [joinCode, storageKey, todayKey])
+  }, [joinCode, storageKey, todayKey, voterToken])
 
   // Refresh tally after a vote. The RPC is read-only and cheap.
   const refreshTally = async () => {
@@ -3684,8 +3726,11 @@ function VoterLanding({ joinCode }: VoterLandingProps) {
     // client-side roster for id selection; the server resolves the id
     // at vote time). Save the name only; the id comes back from the
     // RPC after the first vote.
-    setVoter({ id: '', name: name.trim() })
-    try { window.localStorage.setItem(storageKey, JSON.stringify({ id: '', name: name.trim() })) } catch { /* ignore */ }
+    // Manual name picker path. We don't have an invite_code here — the
+    // user typed a name that may or may not match a roster entry. Set
+    // invite_code to '' so handleVote falls back to the named RPC.
+    setVoter({ id: '', name: name.trim(), invite_code: '' })
+    try { window.localStorage.setItem(storageKey, JSON.stringify({ id: '', name: name.trim(), invite_code: '' })) } catch { /* ignore */ }
     setCastError(null)
   }
 
@@ -3693,9 +3738,13 @@ function VoterLanding({ joinCode }: VoterLandingProps) {
     if (!voter || !poll) return
     setBusy(true); setCastError(null)
     try {
-      const result = await api.castVoteAnon(joinCode, voter.name, poll.id, optionId)
+      // Token-bound RPC when we have the token (link included ?voter=).
+      // Falls back to the named RPC for legacy flows.
+      const result = voter.invite_code
+        ? await api.castVoteAnonByToken(joinCode, voter.invite_code, poll.id, optionId)
+        : await api.castVoteAnon(joinCode, voter.name, poll.id, optionId)
       // Save the server-resolved id so the next visit skips the picker.
-      const next = { id: result.voter_id, name: voter.name }
+      const next = { id: result.voter_id, name: voter.name, invite_code: voter.invite_code }
       setVoter(next)
       try { window.localStorage.setItem(storageKey, JSON.stringify(next)) } catch { /* ignore */ }
       // Optimistic + server refresh.
@@ -3703,8 +3752,12 @@ function VoterLanding({ joinCode }: VoterLandingProps) {
       await refreshTally()
     } catch (e: any) {
       const msg = String(e?.message ?? '')
-      // Map the Postgres exception text to user-friendly copy.
-      if (msg.includes('unknown voter name')) {
+      // Map the Postgres exception text to user-friendly copy. The token
+      // RPC raises 'unknown voter token' (stale or tampered link);
+      // the name RPC raises 'unknown voter name'. Handle both.
+      if (msg.includes('unknown voter token')) {
+        setCastError('This voting link is no longer valid. Ask the owner to send a new one.')
+      } else if (msg.includes('unknown voter name')) {
         setCastError(`"${voter.name}" isn't on ${household?.name ?? 'this kitchen'}'s voter list. Ask the owner to add you in their Family tab first.`)
       } else if (msg.includes('poll is closed')) {
         setCastError('This vote is closed — showing results only.')
@@ -3726,7 +3779,7 @@ function VoterLanding({ joinCode }: VoterLandingProps) {
   // Voter needs to identify themselves first. Show the roster if we
   // have it (lets them tap their name instead of typing).
   if (!voter) return <div className="auth-screen"><div className="onboarding-card"><span className="eyebrow"><Users size={14} /> VOTING — {household.name}</span><h1>What's your name?</h1><p>Pick from the list, or type the name the host added you under in their Family tab. Stays on this device.</p>
-    {roster.length > 0 && <ul className="voter-roster">{roster.map((v) => <li key={v.id}><button className="voter-roster-pick" onClick={() => { setName(v.name); setVoter({ id: v.id, name: v.name }); try { window.localStorage.setItem(storageKey, JSON.stringify({ id: v.id, name: v.name })) } catch { /* ignore */ } setCastError(null) }}>{v.name}</button></li>)}</ul>}
+    {roster.length > 0 && <ul className="voter-roster">{roster.map((v) => <li key={v.id}><button className="voter-roster-pick" onClick={() => { setName(v.name); setVoter({ id: v.id, name: v.name, invite_code: v.invite_code }); try { window.localStorage.setItem(storageKey, JSON.stringify({ id: v.id, name: v.name, invite_code: v.invite_code })) } catch { /* ignore */ } setCastError(null) }}>{v.name}</button></li>)}</ul>}
     <details className="voter-name-details"><summary>Not in the list?</summary>
       <label className="onboarding-field"><span>Your name</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Papa, Diya" autoFocus onKeyDown={(e) => e.key === 'Enter' && handlePickName()} /></label>
       <div className="onboarding-actions"><button className="primary" disabled={busy || !name.trim()} onClick={handlePickName}>{busy ? 'Saving…' : 'Use this name'}</button></div>

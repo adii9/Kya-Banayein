@@ -74,3 +74,16 @@ export const getResults = (poll: Poll): PollResult => {
 
 export const buildWhatsAppShareUrl = (text: string): string =>
   `https://wa.me/?text=${encodeURIComponent(text)}`
+
+// Per-voter share URL. The owner renders one of these per voter on
+// the Family tab so each family member gets a token-bound link. The
+// voter token is the same invite_code we already generate for the
+// in-app voter picker — 5 chars from a 32-char unambiguous alphabet
+// (no I/L/0/O), uppercased. VoterLanding reads the `voter` query
+// param and skips the name picker.
+//
+// `joinCode` alone is still a valid href (VoterLanding falls back to
+// the name picker when no voter token is present), so existing share
+// links keep working.
+export const perVoterShareUrl = (baseUrl: string, joinCode: string, voterToken: string): string =>
+  `${baseUrl.replace(/\/$/, '')}/?join=${encodeURIComponent(joinCode)}&voter=${encodeURIComponent(voterToken)}`
