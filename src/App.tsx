@@ -1380,16 +1380,21 @@ function App() {
 
   if (bootstrapping) return <div className="auth-screen"><div className="auth-card"><span className="brand-mark"><UtensilsCrossed size={28} /></span><h1>Kya Banayein?</h1><p>Loading…</p></div></div>
 
-  // Anon voter landing: if the URL has ?join=<code> and the user isn't
-  // signed in, render the stripped-down VoterLanding page. This is the
-  // whole point of the share link — voter taps, types their name, votes,
-  // done. No Google account required.
+  // Anon voter landing: if the URL has ?join=<code>, render the
+  // stripped-down VoterLanding page. This is the whole point of the
+  // share link — voter taps, types their name, votes, done. No Google
+  // account required.
   //
-  // We check this BEFORE the !session gate so a signed-out voter never
-  // sees the SignIn screen. The VoterLanding reads its own data via the
-  // 0017 anon RPCs; it doesn't touch the household bootstrap, the polls
-  // state, or any authenticated flow.
-  if (!session && typeof window !== 'undefined') {
+  // Routed by URL only, NOT session. The previous gate `!session &&`
+  // was racy: onAuthStateChange fires after first render and sets
+  // session from a cached token, which then drops the voter into the
+  // main app / SignIn screen. Recipients receive a link to their own
+  // device, where they'd never been signed in — but the share flow
+  // didn't ask recipients to clear cookies first, so a family member
+  // reusing the device logged into Adii's household would see the
+  // signed-in shell instead of the voter landing. URL is the only
+  // trigger worth trusting.
+  if (typeof window !== 'undefined') {
     const params = new URLSearchParams(window.location.search)
     const joinCode = params.get('join')
     if (joinCode) return <VoterLanding joinCode={joinCode} />
