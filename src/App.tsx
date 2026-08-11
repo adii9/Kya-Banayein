@@ -10,6 +10,7 @@ type MealOption = mealEngine.MealOption
 type UserDish = mealEngine.UserDish
 import { parseCommand, SUPPORTED_LANGS, type ChatIntent } from './chatBot'
 import { addVoter as _addVoter, buildWhatsAppShareUrl, castVote as _castVote, createPoll, type Poll } from './voting'
+import { istDateKey } from './dates'
 import { supabase, APP_BASE_URL } from './supabase'
 import * as api from './api'
 import { KITCHEN_GROUPS, type KitchenTemplateItem } from './kitchenTemplate'
@@ -134,12 +135,10 @@ const categoryForItem = (name: string, existing: InventoryItem[]): 'weekly' | 'm
   return 'weekly'
 }
 
-// Asia/Kolkata-aware YYYY-MM-DD key. JS Date.toISOString() is always
-// UTC, so an Indian user at 11pm IST would get "tomorrow" on the slot
-// selector and "yesterday" in their meal history. en-CA gives the
-// ISO-8601 date shape we need for the plan_date key.
-const IST_TZ = 'Asia/Kolkata'
-const istDateKey = (d: Date): string => new Intl.DateTimeFormat('en-CA', { timeZone: IST_TZ }).format(d)
+// istDateKey lives in src/dates.ts so api.ts can share the same
+// Asia/Kolkata day key when it writes votes.poll_date. Defining it
+// here and a UTC version in api.ts caused votes to silently disappear
+// after 8:30pm IST.
 
 function Counter({ value, setValue, min = 1, max = 6 }: { value: number; setValue: (value: number) => void; min?: number; max?: number }) {
   return <div className="counter-control">
@@ -1141,12 +1140,34 @@ function App() {
     }
   }
   const resetData = async () => {
+    // Server-side wipe first. The reset_household_data RPC clears
+    // inventory_items, meal_plans, meal_history, voters, votes, polls,
+    // dish_overrides, household_meals, and user_meals — but keeps the
+    // household row and the user's auth session intact. Old behavior
+    // only cleared local useState, which left the kitchen fully
+    // visible on the next refresh (and on any other signed-in device).
+    if (household) {
+      try { await api.resetHouseholdData(household.id) } catch (e) { console.error('Reset RPC failed:', e) }
+    }
+    // Local state mirrors what bootstrap will fetch — empty kitchen.
     setPreferences(DEFAULT_PREFERENCES)
     setInventory(DEFAULT_INVENTORY)
     setSelected(null)
     setConfirmed(null)
     setVoting(DEFAULT_VOTING)
     setVoterIndex({})
+    setVoters([])
+    setMealHistory([])
+    setMealPlansByDate({})
+    setPollsBySlot({})
+    setTallyByPoll({})
+    setUserMeals([])
+    setDishOverrides([])
+    setHouseholdMeals([])
+    setCustomOrderItems({ weekly: [], monthly: [] })
+    setVoterPreferences([])
+    setExcludedDishes(new Set())
+    setTab('today')
   }
   const signOut = async () => { await supabase.auth.signOut() }
 
@@ -2004,7 +2025,7 @@ function App() {
           <label className="setting-row toggle-row"><span><b>Pure vegetarian household</b><small>Never suggest eggs or meat</small></span><input type="checkbox" checked={preferences.vegetarian} onChange={(e) => setPreferences({ ...preferences, vegetarian: e.target.checked })} /></label>
           <label className="setting-row toggle-row"><span><b>Family voting</b><small>Let everyone pick a meal — transparent tally</small></span><input type="checkbox" checked={voting.enabled} onChange={(e) => setVoting((v) => ({ ...v, enabled: e.target.checked }))} /></label>
           {preferences.dislikes.length > 0 && <div className="setting-row"><span><b>Never suggest</b><small>Set by you or the assistant</small></span><div className="dislike-tags">{preferences.dislikes.map((d, i) => <span className="tag" key={`${d.name}-${i}`}>{d.name}{d.slot && <em className="dislike-slot-pill"> · {d.slot.toLowerCase()}</em>}<button onClick={() => setPreferences((p) => ({ ...p, dislikes: p.dislikes.filter((_, j) => j !== i) }))} aria-label={`Remove ${d.name}`}><X size={12} /></button></span>)}</div></div>}
-          <button className="reset-button" onClick={resetData}><RotateCcw size={17} /> Reset local cache</button>
+          <button className="reset-button" onClick={resetData}><RotateCcw size={17} /> Reset kitchen data</button>
           <button className="reset-button" style={{ marginLeft: 8 }} onClick={async () => {
             // B5 fix: re-run pantry setup actually re-opens the wizard.
             // We use a separate forceOnboarding flag (not nulling

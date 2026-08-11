@@ -1,6 +1,7 @@
 import type { InventoryItem, Dish } from './mealEngine'
 import { DEFAULT_INVENTORY } from './mealEngine'
 import { supabase } from './supabase'
+import { istDateKey } from './dates'
 
 // Generates a 'JOIN-XXXXX' household join code. ~1M combinations (32^5);
 // on the rare chance of collision, the caller retries. We exclude
@@ -102,14 +103,17 @@ export const removeVoterRow = async (id: string) => {
 }
 
 export const fetchVotesToday = async (householdId: string): Promise<VoteRow[]> => {
-  const today = new Date().toISOString().slice(0, 10)
+  // Read using the same Asia/Kolkata day key that upsertVote writes with.
+  // Was `new Date().toISOString().slice(0, 10)` — UTC, so after 8:30pm IST
+  // the read key was "tomorrow" and empty results silently dropped the vote.
+  const today = istDateKey(new Date())
   const { data, error } = await table('votes').select('voter_id, meal_id, poll_date').eq('household_id', householdId).eq('poll_date', today)
   if (error) throw error
   return (data ?? []) as VoteRow[]
 }
 
 export const upsertVote = async (householdId: string, voterId: string, mealId: string) => {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = istDateKey(new Date())
   const { error } = await table('votes').upsert({ household_id: householdId, voter_id: voterId, meal_id: mealId, poll_date: today }, { onConflict: 'voter_id,poll_date' })
   if (error) throw error
 }
@@ -661,7 +665,10 @@ export const upsertPollVote = async (
   // votes.meal_id encodes `<poll_id>:opt:<option_id>` so the votes table
   // doesn't need a separate poll_options table. Cast as one vote per
   // (voter_id, poll_date) so a voter can change their pick.
-  const pollDate = new Date().toISOString().slice(0, 10)
+  // poll_date uses the IST day key (not UTC) so the write lands on the
+  // same day the user is looking at — anon_fetch_today_tally reads it
+  // back with the same key.
+  const pollDate = istDateKey(new Date())
   const mealId = `poll-${pollId}:opt:${optionId}`
   const { error } = await table('votes').upsert(
     { household_id: householdId, voter_id: voterId, meal_id: mealId, poll_date: pollDate },
@@ -679,7 +686,9 @@ export const fetchPollTally = async (pollId: string): Promise<Record<string, str
   // covers all open polls simultaneously — same meal_id encoding across
   // polls would collide. We narrow by joining on the meal_id LIKE pattern.
   // supabase-js doesn't expose LIKE directly via .eq() so we use .like().
-  const today = new Date().toISOString().slice(0, 10)
+  // Use the IST day key so this read matches the upsertPollVote write —
+  // otherwise the tally is empty after 8:30pm IST on the owner's device.
+  const today = istDateKey(new Date())
   const { data, error } = await table('votes')
     .select('voter_id, meal_id, poll_date')
     .like('meal_id', `poll-${pollId}:opt:%`)
