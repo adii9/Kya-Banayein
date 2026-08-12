@@ -800,7 +800,14 @@ function DislikesSection({ dislikes, onRemove, onAdd }: {
 function App() {
   const [session, setSession] = useState<Session | null>(null)
   const [household, setHousehold] = useState<api.Household | null>(null)
-  const [bootstrapping, setBootstrapping] = useState(true)
+  // householdReady flips true only after the household fetch resolves
+  // (success OR "no household found"). Without this, the render sees
+  // household=null during the query gap and routes to the onboarding
+  // wizard — which flashes "Aapka swagat hai" for a frame on every
+  // returning-user sign-in before the household lands. With this flag,
+  // the render stays on a quiet "Loading…" placeholder until we know
+  // whether the user actually needs the wizard.
+  const [householdReady, setHouseholdReady] = useState(false)
   const [tab, setTab] = useState<Tab>('today')
   // Dynamic day/meal-of-day labels for the Today hero. Recomputed on every
   // render — cheap, and means a user opening the app at 6pm sees "Wednesday
@@ -898,10 +905,22 @@ function App() {
   // household with the existing row from Supabase, so the wizard
   // never actually reappeared.
   const [forceOnboarding, setForceOnboarding] = useState(false)
+  // Bootstrap-once-per-session guard. The old bootstrap effect listed
+  // `household?.id` in its deps and called `setHousehold(hh)` inside,
+  // which caused the effect to re-fire after the first successful
+  // load, briefly nulling household and flashing "My Kitchen" before
+  // the real name arrived. We now only bootstrap once per session.
+  const bootstrappedFor = useRef<string | null>(null)
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session: s } }) => { setSession(s); setBootstrapping(false) })
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s))
+    supabase.auth.getSession().then(({ data: { session: s } }) => setSession(s))
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+      // Sign-out → reset the bootstrap guard so the next sign-in does
+      // a full bootstrap instead of being short-circuited by the
+      // previous session's id.
+      if (!s) { bootstrappedFor.current = null; setHouseholdReady(false); setHousehold(null) }
+      setSession(s)
+    })
     return () => sub.subscription.unsubscribe()
   }, [])
 
@@ -934,16 +953,23 @@ function App() {
 
   useEffect(() => {
     if (!session?.user?.id) return
+    // Bootstrap only once per signed-in session. Earlier versions
+    // included `household?.id` in the deps and re-fired after every
+    // setHousehold, flashing the "My Kitchen" default for a frame
+    // before the real household name arrived.
+    if (bootstrappedFor.current === session.user.id) return
+    bootstrappedFor.current = session.user.id
+    setHouseholdReady(false)
     let cancelled = false
     ;(async () => {
       try {
         const hh = await api.fetchHousehold(session.user.id)
         if (cancelled) return
-        if (!hh) { setTab('onboarding'); return }
+        if (!hh) { setHouseholdReady(true); setTab('onboarding'); return }
         // B5 fix: when the user explicitly asked to re-run pantry setup,
         // we still load the existing household so the wizard can re-seed
         // it via bulkReplaceInventory, but we don't surface the main app.
-        if (forceOnboarding) return
+        if (forceOnboarding) { setHouseholdReady(true); return }
         setHousehold(hh)
         // Lazy-generate a join code if this household doesn't have one yet.
         // The SQL migration only backfills on the existing household; new
@@ -1017,9 +1043,10 @@ function App() {
           setTallyByPoll(tally)
         } catch (e) { console.error('Poll bootstrap failed:', e) }
         } catch (e) { console.error('Bootstrap failed:', e) }
+        finally { if (!cancelled) setHouseholdReady(true) }
         })()
         return () => { cancelled = true }
-        }, [session?.user?.id, household?.id])
+        }, [session?.user?.id])
 
         // Phase H: realtime tally updates. Subscribe to votes for this
         // household + today's date; refresh the per-poll tally on every
@@ -1378,7 +1405,10 @@ function App() {
   const groceryListText = (label: string, items: { name: string; quantity: number; unit: string }[]) =>
     `🛒 ${preferences.familyName} — ${label}\n\n${items.map((i) => `• ${i.name} — ${i.quantity.toLocaleString()} ${i.unit}`).join('\n')}\n\nShared from Kya Banayein?`
 
-  if (bootstrapping) return <div className="auth-screen"><div className="auth-card"><span className="brand-mark"><UtensilsCrossed size={28} /></span><h1>Kya Banayein?</h1><p>Loading…</p></div></div>
+  // Wait until the household query has resolved before deciding whether
+  // to show the onboarding wizard. Without this gate, returning users
+  // see the wizard for a frame between OAuth completion and the
+  // household fetch returning.
 
   // Anon voter landing: if the URL has ?join=<code>, render the
   // stripped-down VoterLanding page. This is the whole point of the
@@ -1432,6 +1462,13 @@ function App() {
       } finally { setJoinBusy(false) }
     }}
   />
+  // (the existing `if (!session) return <SignIn />` below renders the
+  // sign-in screen for logged-out users. We must NOT trap logged-out
+  // users behind a "Loading…" card.)
+  // Signed in but Supabase hasn't returned the household yet. Show a
+  // quiet placeholder so we don't flash the onboarding wizard during
+  // the query gap on returning-user sign-in.
+  if (!householdReady) return <div className="auth-screen"><div className="auth-card"><span className="brand-mark"><UtensilsCrossed size={28} /></span><h1>Kya Banayein?</h1><p>Loading your kitchen…</p></div></div>
   if (!household || forceOnboarding) return <KitchenOnboarding session={session} forceOnboarding={forceOnboarding} currentSuggestionCount={preferences.suggestionCount} currentDishesPerMeal={preferences.dishesPerMeal} onComplete={(hh) => { setHousehold(hh); setForceOnboarding(false); setTab('today') }} />
 
   // Cheap, but used in the render path so stay readable. Pulls from

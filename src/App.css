@@ -340,6 +340,32 @@ header .brand small { color: var(--muted); }
 .slot-chip.confirmed .slot-tag.done { background: rgba(94,140,90,.18); color: #4f7a3f; }
 .slot-chip.active .slot-tag { background: rgba(255,255,255,.2); color: #fff; }
 
+/* Meal slot controls — one cohesive control, not three browser-default buttons. */
+.slot-selector { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 0 24px; }
+.slot-chip-wrap { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 6px; padding: 5px; background: rgba(255,253,248,.74); border: 1px solid rgba(133,108,80,.18); border-radius: 18px; box-shadow: 0 5px 18px rgba(75,55,35,.045); transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+.slot-chip-wrap:focus-within, .slot-chip-wrap:hover { border-color: rgba(157,61,44,.34); box-shadow: 0 8px 22px rgba(75,55,35,.08); transform: translateY(-1px); }
+.slot-chip { min-width: 0; width: 100%; min-height: 45px; justify-content: flex-start; background: transparent; border: 0; border-radius: 13px; padding: 8px 12px; font-size: 14px; font-weight: 650; color: var(--ink); gap: 8px; transition: background .18s ease, color .18s ease; }
+.slot-chip:hover { color: var(--red); background: rgba(157,61,44,.06); }
+.slot-chip.active { background: var(--red); color: #fffaf2; border-color: transparent; box-shadow: 0 5px 12px rgba(157,61,44,.18); }
+.slot-chip.active:hover { color: #fffaf2; background: var(--red-dark); }
+.slot-chip.has-plan .slot-label::after { content: '•'; color: var(--orange); margin-left: 7px; }
+.slot-chip.active.has-plan .slot-label::after { color: #ffd28c; }
+.slot-chip .slot-tag { display: none; }
+.slot-share, .slot-add { flex: 0 0 auto; height: 35px; border: 0; border-radius: 11px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: background .18s ease, color .18s ease, transform .18s ease; }
+.slot-share { width: 35px; background: #f1e9dc; color: var(--muted); }
+.slot-add { padding: 0 11px; background: #f1e9dc; color: var(--ink); font-size: 12px; font-weight: 700; gap: 5px; }
+.slot-share:hover, .slot-add:hover { background: #ead7b9; color: var(--red); transform: translateY(-1px); }
+.slot-chip-wrap:has(.slot-chip.active) { border-color: rgba(157,61,44,.28); background: #fffaf2; }
+.slot-chip-wrap:has(.slot-chip.active) .slot-share, .slot-chip-wrap:has(.slot-chip.active) .slot-add { background: #f4e4d3; }
+
+@media (max-width: 620px) {
+  .slot-selector { gap: 7px; }
+  .slot-chip-wrap { grid-template-columns: minmax(0, 1fr) auto; gap: 4px; padding: 4px; border-radius: 15px; }
+  .slot-chip { min-height: 40px; padding: 7px 9px; font-size: 12px; }
+  .slot-share { display: none; }
+  .slot-add { height: 32px; padding: 0 8px; font-size: 11px; }
+}
+
 /* Custom inventory adder */
 .custom-adder-trigger { margin-top: 20px; display: flex; justify-content: center; }
 .custom-adder { margin-top: 20px; background: var(--card); border: 1px solid #e5ddd1; border-radius: 18px; padding: 20px; }
