@@ -674,13 +674,14 @@ header .brand small { color: var(--muted); }
 @media (max-width: 920px) { .slot-canvas { grid-template-columns: 1fr 1fr; align-items: start; } }
 @media (max-width: 620px) { .slot-canvas { grid-template-columns: 1fr; align-items: start; } }
 
-.slot-canvas-card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; min-height: 0; align-self: start; overflow: hidden; contain: layout; transition: border-color .15s, box-shadow .15s; }
-/* align-self: start (in addition to align-items on parent) prevents the
-   card from stretching vertically when other cards in the row are
-   taller — each card sizes to its own content. min-height: 0 (was
-   220px) so an empty-state card doesn't have a tall dead zone that
-   dwarfs the picks below the header. overflow: hidden + contain:
-   layout clip overflow and isolate card sizing from grid siblings. */
+.slot-canvas-card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; align-self: start; transition: border-color .15s, box-shadow .15s; }
+/* align-self: start keeps cards independent of each other in the grid
+   row. Cards size to their content (header + tally + picks + footer).
+   No min-height (the previous 220px was dead space on empty slots)
+   and no overflow: hidden (we want children to push the card to grow,
+   not be clipped). The Dinner card on Aug 13 was rendering its
+   finalised note INSIDE the card boundary but the slot-dish pill
+   rendering OUTSIDE — overflow: hidden was the cause. */
 .slot-canvas-card.active { border-color: var(--ink); box-shadow: 0 0 0 3px rgba(0,0,0,.04); }
 .slot-canvas-card.confirmed { background: rgba(94,140,90,.06); border-color: rgba(94,140,90,.4); }
 .slot-canvas-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
