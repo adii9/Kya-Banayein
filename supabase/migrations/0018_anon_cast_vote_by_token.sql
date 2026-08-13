@@ -97,8 +97,22 @@ begin
   end if;
 
   -- 4. Verify option_id is one of the poll's options.
+  -- Bug fix: the original used bool_and, which requires ALL options to
+  -- match — impossible when the poll has more than one option. The RPC
+  -- therefore rejected every vote as 'invalid option', so the token-
+  -- bound path silently failed even with a valid option_id. bool_or
+  -- matches if ANY element's id equals p_option_id.
+  --
+  -- Return type was also changed from RETURNS TABLE (voter_id, option_id)
+  -- to RETURNS json to dodge a PL/pgSQL column-shadowing issue: with
+  -- RETURNS TABLE, the bare column name `voter_id` in `return query
+  -- select v_voter_id as voter_id` is ambiguous against the votes
+  -- table column also in scope (we just inserted into it). Postgres
+  -- raises 42702 ("column reference is ambiguous"). RETURNS json
+  -- sidesteps that and gives the client a single object — the JS
+  -- helper castVoteAnonByToken parses it as {voter_id, option_id}.
   if not (
-    select bool_and(elem->>'id' = p_option_id)
+    select bool_or(elem->>'id' = p_option_id)
     from jsonb_array_elements(v_poll_options) elem
   ) then
     raise exception 'invalid option' using errcode = 'P0002';
@@ -109,13 +123,15 @@ begin
   v_meal_id := 'poll-' || p_poll_id::text || ':opt:' || p_option_id;
 
   insert into public.votes (household_id, voter_id, meal_id, poll_date, updated_at)
-  values (v_household_id, v_voter_id, v_meal_id, v_poll_date, now())
+  values (v_household_id, v_voter_id_resolved, v_meal_id, v_poll_date, now())
   on conflict (voter_id, poll_date) do update
     set meal_id = excluded.meal_id,
         updated_at = excluded.updated_at;
 
-  return query
-    select v_voter_id, p_option_id;
+  -- 6. Return. JSON object so the JS contract is {voter_id, option_id}.
+  -- jsonb_build_object uses string literal keys, so there's no PL/pgSQL
+  -- column-resolution ambiguity.
+  return jsonb_build_object('voter_id', v_voter_id_resolved, 'option_id', p_option_id)::text;
 end;
 $$;
 

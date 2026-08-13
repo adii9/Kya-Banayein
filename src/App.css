@@ -776,6 +776,8 @@ header .brand small { color: var(--muted); }
 .slot-tally-bar-meter i { display: block; height: 100%; background: linear-gradient(90deg, var(--orange), var(--red)); transition: width .3s ease; }
 .slot-tally-bar.winning .slot-tally-bar-meter i { background: linear-gradient(90deg, var(--green), #4f7a3f); }
 .slot-tally-bar-count { font-size: 13px; font-weight: 700; color: var(--ink); }
+.slot-tally-drift { margin: 0; padding: 8px 10px; font-size: 12px; line-height: 1.45; color: var(--muted); background: rgba(220,165,49,.08); border: 1px solid rgba(220,165,49,.25); border-radius: 8px; }
+.slot-tally-drift b { color: var(--ink); font-weight: 700; }
 
 .slot-finalise-inline { background: var(--green); border: 1px solid var(--green); color: #fff; }
 .slot-finalise-inline:hover { background: #4f7a3f; }

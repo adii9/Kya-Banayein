@@ -817,7 +817,16 @@ function App() {
   const hour = now.getHours()
   const mealOfDay: 'BREAKFAST' | 'LUNCH' | 'SNACKS' | 'DINNER' = hour < 11 ? 'BREAKFAST' : hour < 16 ? 'LUNCH' : hour < 19 ? 'SNACKS' : 'DINNER'
   const todayLabel = `${weekday} ${mealOfDay}`
-  const greeting = hour < 11 ? 'Subah ka kya banayein?' : hour < 16 ? 'Dopahar ka kya banayein?' : 'Shaam ka kya banayein?'
+  // Hindi-only heading. Mixed Hindi/English at hero scale renders awkwardly
+  // (small connectives like "ka"/"kya" look detached in the display face).
+  // Aug 2026: Adii preferred the fully-Hindi phrasing for readability.
+  const greeting = hour < 11
+    ? 'Subah ke khaney mein kya banayein?'
+    : hour < 16
+      ? 'Dopahar ke khaney mein kya banayein?'
+      : hour < 19
+        ? 'Shaam ke khaney mein kya banayein?'
+        : 'Raat ke khaney mein kya banayein?'
   const mealNoun = mealOfDay === 'BREAKFAST' ? "Today's breakfast" : mealOfDay === 'LUNCH' ? "Today's lunch" : mealOfDay === 'SNACKS' ? "Today's snacks" : "Tonight's dinner"
   const todayKey = istDateKey(now)
   const [preferences, setPreferences] = useState<Preferences>(() => migratePreferences(load('kya-preferences', DEFAULT_PREFERENCES)))
@@ -941,6 +950,14 @@ function App() {
       // just bail. New shares use ?join= so this branch is rare.
       return
     }
+    // Token-bound voter link (?join=...&voter=...). The recipient is
+    // pre-identified — VoterLanding reads the token, skips the name
+    // picker, and casts via anon_cast_vote_by_token. If we also set
+    // pendingJoin here, the next render flashes <JoinScreen> over
+    // <VoterLanding>, drops the voter token, and "Add yourself" UI
+    // replaces the ballot. Bail before any household lookup so
+    // VoterLanding owns the flow end-to-end.
+    if (params.get('voter')) return
     if (!session?.user?.id) return
     let cancelled = false
     api.fetchHouseholdByJoinCode(code).then((h) => {
@@ -1353,13 +1370,32 @@ function App() {
   // panel and the Family tab. The previous Today-tab path only updated
   // setVoterIndex, so newly-added voters were invisible to the Family
   // tab until next refresh. Now both states stay in sync.
+  // Sync rule: Rules counter = max(household.members, voters.length).
+  // - addVoter bumps the counter so Rule and Family never show a voter
+  //   above the counter (otherwise the voter count would exceed the
+  //   household size — Adii flagged this in Aug 2026).
+  // - removeVoter drops the counter to the new voter count. Aug 2026:
+  //   Adii removed a voter and Rules stayed at 4 — voters showed 3.
+  //   Fix is symmetric: any voter change re-syncs Rules.
+  // - The Counter's min is also max(1, voters.length), so a remove can
+  //   never lower Rules below the remaining voter count.
+  // - The debounced updateHousehold effect (below) then persists the
+  //   new counter to the server, keeping household.members and voter
+  //   rows consistent without extra plumbing.
   const addVoterHandler = async (name: string): Promise<api.Voter | null> => {
     if (!name.trim() || !household) return null
     const code = generateCode()
     try {
       const v = await api.addVoterRow(household.id, name, code)
       setVoterIndex((idx) => ({ ...idx, [v.name]: v.id }))
-      setVoters((prev) => (prev.some((x) => x.id === v.id) ? prev : [...prev, v]))
+      setVoters((prev) => {
+        const next = prev.some((x) => x.id === v.id) ? prev : [...prev, v]
+        // next.length is the post-insert tally; bump Rules if it would
+        // otherwise sit below the new voter count.
+        const desiredMembers = Math.max(1, next.length)
+        setPreferences((p) => (p.members < desiredMembers ? { ...p, members: desiredMembers } : p))
+        return next
+      })
       return v
     } catch (e) {
       console.error('Add voter failed:', e)
@@ -1373,7 +1409,13 @@ function App() {
       alert('Could not remove member. Try again.')
       return
     }
-    setVoters((prev) => prev.filter((v) => v.id !== id))
+    setVoters((prev) => {
+      const next = prev.filter((v) => v.id !== id)
+      // Sync Rules down to the new voter count. Floor at 1 so an empty
+      // roster (last voter removed) doesn't drop to 0 — Counter min is 1.
+      setPreferences((p) => ({ ...p, members: Math.max(1, next.length) }))
+      return next
+    })
     setVoterIndex((idx) => {
       const copy = { ...idx }
       Object.keys(copy).forEach((k) => { if (copy[k] === id) delete copy[k] })
@@ -1620,6 +1662,28 @@ function App() {
                     </li>
                   })}
                 </ul>
+                {/* Aug 2026: when the slot's picks diverge from the poll's
+                    saved Option A (e.g. user edited dishes after sharing),
+                    the modal will reopen with the live poll's options but
+                    the slot canvas still shows the new picks — confusing.
+                    Surface the drift here so the owner knows the live poll
+                    is a snapshot, not a live mirror. */}
+                {(() => {
+                  const optA = poll.options[0]
+                  if (!optA || picks.length === 0) return null
+                  const norm = (s: string) => s.trim().toLowerCase()
+                  const pickNames = new Set(picks.map((p) => norm(p.name)))
+                  const pollNames = new Set(optA.dishes.map((d) => norm(d.name)))
+                  if (pickNames.size === pollNames.size && [...pickNames].every((n) => pollNames.has(n))) return null
+                  const added = [...pickNames].filter((n) => !pollNames.has(n))
+                  const removed = [...pollNames].filter((n) => !pickNames.has(n))
+                  return <p className="slot-tally-drift">
+                    Poll saved with <b>{[...pollNames].join(' + ') || 'no dishes'}</b>
+                    {added.length > 0 && <> · slot now adds <b>{added.join(' + ')}</b></>}
+                    {removed.length > 0 && <> · slot removed <b>{removed.join(' + ')}</b></>}
+                    {' '}— voters still see the saved snapshot. Tap <b>Poll live</b> to edit or refresh.
+                  </p>
+                })()}
               </div>}
               {picks.length === 0 ? (
                 <div className="slot-empty">
@@ -1850,7 +1914,9 @@ function App() {
           slot={createPollOpen}
           slotLabel={createPollOpen === 'BREAKFAST' ? 'breakfast' : createPollOpen === 'LUNCH' ? 'lunch' : 'dinner'}
           picks={mealPlansByDate[todayKey]?.find((p) => p.slot === createPollOpen)?.manual_dishes ?? []}
+          existingPoll={pollsBySlot[createPollOpen]}
           votersCount={voters.length}
+          voters={voterList}
           joiningUrl={`${APP_BASE_URL}/?join=${household.join_code ?? ''}`}
           shareText={(() => {
             const slotLabel = createPollOpen === 'BREAKFAST' ? 'breakfast' : createPollOpen === 'LUNCH' ? 'lunch' : 'dinner'
@@ -2064,7 +2130,7 @@ function App() {
         <div className="page-heading"><span className="eyebrow"><Settings2 size={14} /> HOUSEHOLD RULES</span><h1>Your kitchen, your rules</h1><p>Set this once. Every meal suggestion will respect it.</p></div>
         <div className="settings-card">
           <label className="text-field"><span>Household name</span><input value={preferences.familyName} onChange={(e) => setPreferences({ ...preferences, familyName: e.target.value })} /></label>
-          <div className="setting-row"><span><b>Family members</b><small>Used to size ingredient quantities</small></span><Counter value={preferences.members} setValue={(members) => setPreferences({ ...preferences, members })} max={12} /></div>
+          <div className="setting-row"><span><b>Family members</b><small>Used to size ingredient quantities{voters.length > 1 ? ` · at least ${voters.length} for your named members` : ''}</small></span><Counter value={preferences.members} setValue={(members) => setPreferences({ ...preferences, members })} min={Math.max(1, voters.length)} max={12} /></div>
           {/* Phase F: the "Meal suggestions" and "Dishes per meal" steppers
               used to drive the auto-suggested meal-grid on Today. That grid
               is gone — the user picks dishes themselves. The engine still
@@ -3282,13 +3348,30 @@ function AddDishModal(props: AddDishModalProps) {
 // options filled in. The owner can always save 1 option as a draft via
 // "Save only" — but the DB CHECK rejects 1, so we only enable Save when
 // at least 2 options are present.
+//
+// Re-open behaviour (Aug 2026): if `existingPoll` is provided, the
+// modal prefills with the live poll's saved options instead of seeding
+// from the current slot picks. Otherwise reopening on a slot whose
+// dishes changed since the last save shows a phantom option that no
+// longer matches the voting card — Adii flagged this exact confusion.
 // =============================================================================
 
 type CreatePollModalProps = {
   slot: api.MealSlot
   slotLabel: string
   picks: api.ManualDish[]
+  // When non-null, the modal opens with these options pre-filled instead
+  // of fresh-seeded from `picks`. Pass pollsBySlot[slot] so reopen edits
+  // the live poll rather than starting from the current slot canvas.
+  existingPoll?: api.MealPoll | null
   votersCount: number
+  // Per-voter roster with invite_code so the modal can build per-voter
+  // share URLs. Aug 2026: the modal used to receive only a single
+  // broadcast `joiningUrl`, so the "Send & share" action emitted the
+  // same link to every recipient — anyone on the device could vote as
+  // anyone else by typing a name. Per-voter URLs (built in App.tsx's
+  // voteShareText) bind each link to a single recipient.
+  voters: { name: string; invite_code: string }[]
   joiningUrl: string
   shareText: string
   userMeals: api.UserMeal[]
@@ -3302,7 +3385,7 @@ type CreatePollModalProps = {
 }
 
 function CreatePollModal(props: CreatePollModalProps) {
-  const { slot, slotLabel, picks, votersCount, joiningUrl, shareText, userMeals, householdMeals, inventory, preferences, onShare, onClose, onSave, onPromoteCuratedToRecipe } = props
+  const { slot, slotLabel, picks, existingPoll, votersCount, voters, joiningUrl, shareText, userMeals, householdMeals, inventory, preferences, onShare, onClose, onSave, onPromoteCuratedToRecipe } = props
 
   const newOption = (title: string, dishes: api.ManualDish[]): api.PollOption => ({
     id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `opt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
@@ -3310,10 +3393,16 @@ function CreatePollModal(props: CreatePollModalProps) {
     dishes,
   })
 
-  // Seed exactly 1 option — the user's own picks. No engine involvement.
-  // The "Your pick" title is editable by clicking on it.
+  // Seed once on mount. If we're reopening an existing poll (the slot
+  // already has a live row in meal_polls), prefill with its saved options
+  // so the modal matches what voters see. Otherwise seed with the slot's
+  // current picks. The empty-deps are intentional: the modal is rendered
+  // fresh each time createPollOpen toggles, so this useMemo runs once
+  // per open. Subsequent edits live in `options` state.
   const initial: api.PollOption[] = useMemo(
-    () => [newOption(picks.length > 0 ? 'Your pick' : 'Option', picks)],
+    () => existingPoll && existingPoll.options.length > 0
+      ? existingPoll.options.map((o) => ({ ...o, dishes: o.dishes.map((d) => ({ ...d })) }))
+      : [newOption(picks.length > 0 ? 'Your pick' : 'Option', picks)],
     [], // eslint-disable-line react-hooks/exhaustive-deps
   )
 
@@ -3368,8 +3457,55 @@ function CreatePollModal(props: CreatePollModalProps) {
     setSaving(true)
     try {
       await onSave(options)
-      onShare(shareText)
-    } finally { setSaving(false) }
+      // Per-voter share (Aug 2026): the owner wants to send each family
+      // member a link that names them, so the recipient doesn't have to
+      // type their name and can't vote as someone else. WhatsApp's web
+      // share URL only takes one text body per `window.open` — so we
+      // emit one tab per voter, staggered so the browser doesn't block
+      // them as popups. The first message includes all voter names so
+      // the owner can see them in WhatsApp's chat list.
+      const list = voters
+      if (list.length === 0) {
+        onShare(shareText)
+        return
+      }
+      const tagged = list.map((v: { name: string; invite_code: string }, i: number) => `${i + 1}. ${v.name}`)
+      for (let i = 0; i < list.length; i++) {
+        const v = list[i]
+        const personal = buildVoterShareText(v, tagged, shareText)
+        // Stagger so the first window.open registers with the browser
+        // before subsequent ones fire (Chrome blocks rapid-fire popups).
+        setTimeout(() => onShare(personal), i * 350)
+      }
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Build the per-voter WhatsApp share text. The text mirrors the
+  // shareText passed in for the broadcast case, but:
+  //   - replaces the URL with the voter's personal per-voter share URL
+  //     (?join=...&voter=<token>) so the recipient is pre-identified
+  //   - drops the "type your name" line since the recipient is already
+  //     named in the URL
+  // The `taggedNames` is a multi-line "Who else is voting" block so
+  // the recipient sees the household at a glance. Falls back gracefully
+  // when invite_code is missing (voter wasn't on the latest roster).
+  function buildVoterShareText(
+    voter: { name: string; invite_code: string },
+    taggedNames: string[],
+    fallback: string,
+  ): string {
+    const joinUrl = voter.invite_code
+      ? perVoterShareUrl(APP_BASE_URL, joiningUrl.match(/join=([^&]+)/)?.[1] ?? '', voter.invite_code)
+      : joiningUrl
+    const roster = taggedNames.length > 1 ? `\n\nVoters: ${taggedNames.join(', ')}` : ''
+    // Strip the original share text's "type your name" guidance since
+    // the voter is pre-identified by their personal link.
+    const cleanedFallback = fallback
+      .replace(/Type your name and tap your pick\.?/i, '')
+      .replace(/Pick your favourite option once it opens\.?/i, 'Pick the option you want — your name is already attached to the link.')
+    return `${cleanedFallback}${roster}\n\nYour personal link:\n${joinUrl}`
   }
 
   // Open the dish picker against a specific option. Pre-loads the picker's
@@ -3800,6 +3936,14 @@ function VoterLanding({ joinCode, voterToken }: VoterLandingProps) {
         setCastError('This vote is closed — showing results only.')
       } else if (msg.includes('invalid option')) {
         setCastError('That option is no longer available. Pull down to refresh.')
+      } else if (msg.includes('vote_not_recorded')) {
+        // Raised by api.castVoteAnonByToken / castVoteAnon when the RPC
+        // succeeds but the response shape doesn't include voter_id +
+        // option_id. Almost always means a stale server migration (RPC
+        // shape changed and the live function hasn't been re-deployed),
+        // or an empty result for a closed/missing poll. Show a clear
+        // retry prompt instead of letting the upstream TypeError surface.
+        setCastError('Could not record your vote — try again in a moment. If it keeps failing, ask the owner to resend the link.')
       } else {
         setCastError(msg || 'Could not cast your vote. Try again.')
       }
@@ -3830,11 +3974,18 @@ function VoterLanding({ joinCode, voterToken }: VoterLandingProps) {
   const slotNoun = poll.slot === 'BREAKFAST' ? "today's breakfast" : poll.slot === 'LUNCH' ? "today's lunch" : "tonight's dinner"
 
   // Voter identified — show just the option cards.
+  // The "via your link" hint explains how the page knows who the voter is
+  // when the link itself names them. Without this, recipients who don't
+  // recognise their own device ask "how does this know I'm YASH?" — Adii
+  // flagged this on Aug 13. The name picker path doesn't show this hint
+  // because the user typed their name there.
+  const fromLink = !!voterToken
   return <div className="auth-screen voter-landing">
     <div className="onboarding-card voter-landing-card">
       <span className="eyebrow"><Vote size={14} /> VOTING — {household.name}</span>
       <h1>{voter.name}, what's your pick for {slotNoun}?</h1>
       <p>Tap one option below to cast your vote{closed ? ' (this vote is closed — showing results only)' : ''}.</p>
+      {fromLink && <p className="voter-landing-from-link">Identified from your personal link — only your votes count for {voter.name}.</p>}
       <ul className="voter-landing-options">
         {poll.options.map((opt, idx) => {
           const count = Object.values(tally).filter((o) => o === opt.id).length

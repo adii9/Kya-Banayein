@@ -818,7 +818,30 @@ export const castVoteAnonByToken = async (
   })
 
   if (error) throw error
-  const row = (data ?? []) as Array<{ voter_id: string; option_id: string }>
-  if (row.length === 0) throw new Error('vote_not_recorded')
-  return row[0]
+  // The RPC returns a JSON object {voter_id, option_id}. Earlier
+  // versions of migration 0018 returned a one-row array; tolerate both
+  // shapes so an in-flight Vite HMR (browser still on old code) doesn't
+  // surface a TypeError. The single-row-array shape comes from the
+  // legacy RETURNS TABLE RPC that this helper replaced — if you see
+  // that shape, the RPC on the server is stale and needs the latest
+  // migration applied.
+  let voterId: string | undefined
+  let returnedOptionId: string | undefined
+  if (data == null) {
+    throw new Error('vote_not_recorded')
+  }
+  if (Array.isArray(data)) {
+    const row = data[0] as { voter_id?: string; option_id?: string } | undefined
+    if (!row) throw new Error('vote_not_recorded')
+    voterId = row.voter_id
+    returnedOptionId = row.option_id
+  } else if (typeof data === 'object') {
+    const obj = data as { voter_id?: string; option_id?: string }
+    voterId = obj.voter_id
+    returnedOptionId = obj.option_id
+  } else {
+    throw new Error('vote_not_recorded')
+  }
+  if (!voterId || !returnedOptionId) throw new Error('vote_not_recorded')
+  return { voter_id: voterId, option_id: returnedOptionId }
 }
