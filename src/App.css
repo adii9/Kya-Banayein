@@ -666,17 +666,28 @@ header .brand small { color: var(--muted); }
    slot chip's + Add button.
    ============================================================================ */
 
-.slot-canvas { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 4px 0 32px; }
-@media (max-width: 920px) { .slot-canvas { grid-template-columns: 1fr 1fr; } }
-@media (max-width: 620px) { .slot-canvas { grid-template-columns: 1fr; } }
+.slot-canvas { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 4px 0 32px; align-items: start; }
+/* align-items: start so each card sizes to its own content height — without
+   this, grid stretches all siblings to the tallest cell, which causes an
+   empty-state card to balloon to match the poll card on its left, then
+   overlap the next row's content visually on mobile. */
+@media (max-width: 920px) { .slot-canvas { grid-template-columns: 1fr 1fr; align-items: start; } }
+@media (max-width: 620px) { .slot-canvas { grid-template-columns: 1fr; align-items: start; } }
 
-.slot-canvas-card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; min-height: 220px; transition: border-color .15s, box-shadow .15s; }
+.slot-canvas-card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; min-height: 220px; align-self: start; transition: border-color .15s, box-shadow .15s; }
+/* align-self: start (in addition to align-items on parent) prevents the
+   card from stretching vertically when other cards in the row are
+   taller — empty-state cards keep their natural ~220px, poll cards
+   stay at their content height, no row-level stretching overlap. */
 .slot-canvas-card.active { border-color: var(--ink); box-shadow: 0 0 0 3px rgba(0,0,0,.04); }
 .slot-canvas-card.confirmed { background: rgba(94,140,90,.06); border-color: rgba(94,140,90,.4); }
 .slot-canvas-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .slot-canvas-card > header h3 { font-family: 'DM Serif Display', serif; font-size: 22px; font-weight: 400; margin: 4px 0 0; letter-spacing: -.02em; }
 .slot-canvas-card > header .eyebrow { font-size: 10px; }
-.slot-canvas-actions { display: flex; gap: 6px; align-items: center; }
+.slot-canvas-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+/* flex-wrap + right-align so multiple action buttons (Stop voting,
+   Delete, Poll live) wrap onto a second line on narrow phones instead
+   of overflowing horizontally outside the card's right edge. */
 .slot-canvas-actions button[disabled] { opacity: .55; cursor: not-allowed; }
 
 .slot-empty { flex: 1; display: flex; flex-direction: column; gap: 12px; justify-content: center; padding: 8px 0; color: var(--muted); }
