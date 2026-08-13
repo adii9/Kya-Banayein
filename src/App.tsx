@@ -1644,7 +1644,7 @@ function App() {
                   ><Trash2 size={14} /> Delete</button>}
                 </div>
               </header>
-              {poll && <div className="slot-tally">
+              {poll && !poll.closed_at && <div className="slot-tally">
                 <div className="slot-tally-header">
                   <span className="eyebrow">VOTING</span>
                   <span className="slot-tally-count">{votesCast} / {voterCount || '–'} voted</span>
@@ -1685,6 +1685,18 @@ function App() {
                   </p>
                 })()}
               </div>}
+              {/* Closed/finalized poll (Aug 2026): once the owner taps
+                  "Finalise winner" the slot's manual_dishes are replaced
+                  with the winner's dishes — picks below already show
+                  exactly that. The full voting tally with both options
+                  and the bar meters is no longer useful and just clutters
+                  the card, so it's hidden when closed_at is set. The
+                  header still shows "Voting closed" so the owner can see
+                  the poll history; tapping "Poll live" reopens the modal
+                  if they want to view or extend the closed poll. */}
+              {poll && poll.closed_at && picks.length > 0 && (
+                <p className="slot-finalised-note">Finalised from {poll.options.length}-option vote.</p>
+              )}
               {picks.length === 0 ? (
                 <div className="slot-empty">
                   <p>Empty. Tap <b>+ Add</b> above to pick a dish.</p>
