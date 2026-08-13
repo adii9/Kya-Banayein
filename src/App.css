@@ -18,7 +18,7 @@ header { height: 80px; padding: 0 max(28px, calc((100vw - 1180px) / 2)); display
 .brand b { display: block; font-family: 'DM Serif Display', serif; font-size: 22px; font-weight: 400; line-height: 1; }
 .brand small { display: block; color: var(--muted); margin-top: 4px; font-size: 11px; letter-spacing: .04em; }
 .family-pill { border: 1px solid var(--line); background: rgba(255,253,248,.8); height: 44px; padding: 0 14px; border-radius: 22px; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
-main { width: min(1180px, calc(100% - 56px)); margin: 0 auto; }
+main { width: min(1180px, calc(100% - 56px)); margin: 0 auto; padding-bottom: 110px; /* clear the fixed bottom-nav (height ~68px + 18px bottom + safe-area) */ }
 .hero-copy { padding: 56px 0 30px; display: flex; align-items: end; justify-content: space-between; gap: 32px; }
 .eyebrow { display: inline-flex; align-items: center; gap: 7px; color: var(--red); font-size: 11px; font-weight: 700; letter-spacing: .15em; }
 h1 { font-family: 'DM Serif Display', serif; font-size: clamp(42px, 6vw, 68px); line-height: .98; font-weight: 400; letter-spacing: -.035em; margin: 12px 0 12px; }
@@ -116,6 +116,13 @@ h1 { font-family: 'DM Serif Display', serif; font-size: clamp(42px, 6vw, 68px); 
 .toggle-row input:checked:before { transform: translateX(21px); }
 .reset-button { margin: 18px 0 10px; height: 42px; border: 1px solid #e3cabe; background: #fff8f4; color: var(--red); padding: 0 15px; border-radius: 11px; display: flex; gap: 8px; align-items: center; cursor: pointer; }
 .bottom-nav { position: fixed; z-index: 30; bottom: 18px; left: 50%; transform: translateX(-50%); width: min(560px, calc(100% - 28px)); height: 68px; padding: 7px; background: rgba(42,35,30,.96); backdrop-filter: blur(16px); border-radius: 23px; box-shadow: 0 18px 45px rgba(36,24,16,.25); display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; }
+/* iOS Safari safe-area inset (devices with notch / home-bar). The nav
+   sits 18px from the bottom of the viewport — on a notched iPhone that
+   ends up under the home indicator, hiding the lowest ~12px of icons.
+   Push the nav up by the safe-area inset so it stays visible. */
+@supports (padding: max(0px)) {
+  .bottom-nav { bottom: max(18px, env(safe-area-inset-bottom)); }
+}
 .bottom-nav button { border: 0; background: transparent; color: #c7beb3; border-radius: 16px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; cursor: pointer; min-width: 0; padding: 0 2px; }
 .bottom-nav svg { width: 20px; height: 20px; }
 .bottom-nav span { font-size: 9px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
@@ -361,9 +368,16 @@ header .brand small { color: var(--muted); }
 @media (max-width: 620px) {
   .slot-selector { gap: 7px; }
   .slot-chip-wrap { grid-template-columns: minmax(0, 1fr) auto; gap: 4px; padding: 4px; border-radius: 15px; }
-  .slot-chip { min-height: 40px; padding: 7px 9px; font-size: 12px; }
+  .slot-chip { min-height: 40px; padding: 7px 9px; font-size: 12px; min-width: 0; overflow: hidden; }
+  .slot-chip .slot-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .slot-share { display: none; }
-  .slot-add { height: 32px; padding: 0 8px; font-size: 11px; }
+  /* On narrow phones the "+ Add" label gets crowded against the chip.
+     Shrink the button to icon-only by hiding the trailing "Add" text.
+     The button contains <Plus size={13} /> Add — the SVG keeps the icon,
+     and the literal text node is hidden via font-size: 0 on the parent
+     while the SVG inherits a 14px size. */
+  .slot-add { width: 32px; height: 32px; padding: 0; font-size: 0; gap: 0; }
+  .slot-add svg { width: 14px; height: 14px; }
 }
 
 /* Custom inventory adder */
