@@ -1601,7 +1601,7 @@ function App() {
             // just nudges when they're stuck.
             const suggested = picks.length === 0 && mealOptions.length > 0 ? mealOptions[0].dishes[0] : null
             const slotNoun = s === 'BREAKFAST' ? "Today's breakfast" : s === 'LUNCH' ? "Today's lunch" : "Tonight's dinner"
-            return <article className={`slot-canvas-card ${selectedSlot === s ? 'active' : ''} ${plan?.confirmed_at ? 'confirmed' : ''} ${poll ? 'has-poll' : ''}`} key={s}>
+            return <article className={`slot-canvas-card ${selectedSlot === s ? 'active' : ''} ${plan?.confirmed_at ? 'confirmed' : ''} ${poll ? 'has-poll' : ''} ${poll?.closed_at ? 'closed-poll' : ''}`} key={s}>
               <header>
                 <div>
                   <span className="eyebrow">{s}</span>
