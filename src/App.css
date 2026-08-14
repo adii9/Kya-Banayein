@@ -69,10 +69,21 @@ h1 { font-family: 'DM Serif Display', serif; font-size: clamp(42px, 6vw, 68px); 
 .confirmation-bar small { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
 .confirmation-bar b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 520px; }
 .mini-plate { width: 42px; height: 42px; border-radius: 50%; background: #efe2cb; color: var(--red); display: grid; place-items: center; }
-.primary, .confirmed, .secondary { height: 44px; border-radius: 12px; padding: 0 18px; border: 0; font-weight: 600; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 7px; cursor: pointer; }
+.primary, .secondary { height: 44px; border-radius: 12px; padding: 0 18px; border: 0; font-weight: 600; font-size: 13px; display: flex; align-items: center; justify-content: center; gap: 7px; cursor: pointer; }
+/* Removed `.confirmed` from the button-style rule above — `.confirmed`
+   is also used as a card modifier class on `.slot-canvas-card.confirmed`
+   (the "this meal is confirmed" state). The button style on
+   `.confirmed` lives in the rule below, scoped to button.confirmed
+   so it doesn't leak into the card. */
 .primary { background: var(--red); color: white; }
 .primary:hover { background: var(--red-dark); }
 .confirmed { background: #e4eee2; color: var(--green); }
+/* Scoped to buttons — the bare `.confirmed` rule above sets a default
+   button styling (height: 44px, padding, etc) that was leaking into
+   `.slot-canvas-card.confirmed`, forcing the Dinner card to 44px tall
+   regardless of its content. The button style lives on `.confirmed`
+   when used as a button via the chained selector below. */
+button.confirmed { height: 44px; padding: 0 18px; border: 0; border-radius: 12px; font-size: 13px; font-weight: 600; display: flex; justify-content: center; align-items: center; gap: 7px; cursor: pointer; }
 .page-section { padding: 54px 0 20px; }
 .page-heading { margin-bottom: 30px; }
 .page-heading h1 { font-size: 56px; }
@@ -672,22 +683,25 @@ header .brand small { color: var(--muted); }
    slot chip's + Add button.
    ============================================================================ */
 
-.slot-canvas { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 4px 0 32px; align-items: start; }
-/* align-items: start so each card sizes to its own content height — without
-   this, grid stretches all siblings to the tallest cell, which causes an
-   empty-state card to balloon to match the poll card on its left, then
-   overlap the next row's content visually on mobile. */
-@media (max-width: 920px) { .slot-canvas { grid-template-columns: 1fr 1fr; align-items: start; } }
-@media (max-width: 620px) { .slot-canvas { grid-template-columns: 1fr; align-items: start; } }
+.slot-canvas { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 4px 0 32px; }
+/* No align-items: start on the grid — with grid-auto-rows: auto, each
+   row sizes to its tallest child. On desktop (3 columns) all three
+   slot cards share a row, so the empty Breakfast card stretches to
+   match the tallest Dinner card; on mobile (1 column) each card is
+   its own row, so each sizes to its own content naturally. Adding
+   `align-items: start` causes grid items to use their min-content
+   size (just padding) — flex column children that can shrink below
+   their natural height, so the card collapses to ~44px while its
+   children overflow. Verified with Playwright DOM inspection. */
 
-.slot-canvas-card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; align-self: start; transition: border-color .15s, box-shadow .15s; }
-/* align-self: start keeps cards independent of each other in the grid
-   row. Cards size to their content (header + tally + picks + footer).
-   No min-height (the previous 220px was dead space on empty slots)
-   and no overflow: hidden (we want children to push the card to grow,
-   not be clipped). The Dinner card on Aug 13 was rendering its
-   finalised note INSIDE the card boundary but the slot-dish pill
-   rendering OUTSIDE — overflow: hidden was the cause. */
+@media (max-width: 920px) { .slot-canvas { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 620px) { .slot-canvas { grid-template-columns: 1fr; } }
+
+.slot-canvas-card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; transition: border-color .15s, box-shadow .15s; }
+/* No align-self: start (see comment above) — cards size to their
+   content (header + tally + picks + footer). Grid items stretch
+   naturally to the row's tallest sibling on desktop; on mobile
+   each card is its own row so it sizes to its own content. */
 .slot-canvas-card.active { border-color: var(--ink); box-shadow: 0 0 0 3px rgba(0,0,0,.04); }
 .slot-canvas-card.confirmed { background: rgba(94,140,90,.06); border-color: rgba(94,140,90,.4); }
 .slot-canvas-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
@@ -702,6 +716,12 @@ header .brand small { color: var(--muted); }
 .slot-empty { display: flex; flex-direction: column; gap: 10px; padding: 4px 0 0; color: var(--muted); }
 .slot-empty p { margin: 0; font-size: 14px; line-height: 1.4; }
 .slot-empty .suggest-one { color: var(--orange); font-weight: 600; align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 13px; }
+
+/* F5 fix: curated-menu CTA + fast-path sit on the same row inside the
+   empty slot. Primary CTA dominates; the "just one" link is a smaller
+   escape hatch for users who genuinely want a single-dish one-tap. */
+.slot-empty-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 2px; }
+.slot-empty-actions .slot-curated-cta { display: inline-flex; align-items: center; gap: 6px; }
 
 .slot-dishes { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; }
 .slot-dish { display: grid; grid-template-columns: 14px 1fr auto; align-items: center; gap: 12px; padding: 11px 14px; background: rgba(255,253,248,.85); border: 1px solid var(--line); border-radius: 12px; }

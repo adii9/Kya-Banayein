@@ -1299,15 +1299,26 @@ function App() {
       // should be Maggi" failed to find a user-authored recipe.
       // Phase E: pass householdMeals as the 6th arg so chat suggestions
       // also surface the user's composed meals.
+      // F5 fix: previous behaviour was to upsert a single dish (matchMeal.id)
+      // and pick one matched dish — which wrote exactly ONE row to manual_dishes
+      // and defeated the curated-menu intent. New behaviour: build the full
+      // multi-dish picks from the matched meal (every dish in it, in order)
+      // and persist as manual_dishes, matching the picker-save path. If the
+      // user named a specific dish, prefer meals where that dish is a member
+      // (so the named dish is guaranteed to be in the picks); fall back to
+      // the top-ranked meal otherwise.
       const recs = recommendMeals({ suggestionCount: 6, dishesPerMeal: 4, vegetarian: preferences.vegetarian }, inventory, userMealsToDishes(userMeals), buildDishOverrideMap(dishOverrides), intent.slot, householdMeals)
-      const matchMeal = recs.find((m) => m.dishes.some((d) => d.name.toLowerCase().includes(lc))) ?? recs[0]
+      const matchMeal = recs.find((m) => m.dishes.some((d) => d.name.toLowerCase().includes(lc)))
+        ?? recs[0]
       if (!matchMeal) return `Couldn't build a meal with ${intent.dishName}. Try a different dish name.`
+      const picks: api.ManualDish[] = matchMeal.dishes.map((d) => ({ dish_id: d.id, name: d.name, source: 'curated' as const }))
       const matchedDish = matchMeal.dishes.find((d) => d.name.toLowerCase().includes(lc)) ?? matchMeal.dishes[0]
-      api.upsertMealPlan(household.id, todayKey, intent.slot, matchMeal.id).then((plan) => {
-        setMealPlansByDate((prev) => ({ ...prev, [todayKey]: [...(prev[todayKey] ?? []).filter((p) => p.slot !== intent.slot), plan] }))
+      api.setMealPlanManualDishes(household.id, todayKey, intent.slot, picks).then((updated) => {
+        setMealPlansByDate((prev) => ({ ...prev, [todayKey]: [...(prev[todayKey] ?? []).filter((p) => p.slot !== intent.slot), updated] }))
       }).catch((e) => console.error('Plan upsert failed:', e))
       setSelectedSlot(intent.slot)
-      return `${intent.slot.charAt(0) + intent.slot.slice(1).toLowerCase()} plan set: ${matchedDish.name}${intent.mood ? ` (${intent.mood})` : ''}. Tap the chip to see suggestions.`
+      const dishSummary = picks.length === 1 ? matchedDish.name : `${picks.length} dishes (${picks.slice(0, 2).map((p) => p.name).join(', ')}${picks.length > 2 ? ` +${picks.length - 2}` : ''})`
+      return `${intent.slot.charAt(0) + intent.slot.slice(1).toLowerCase()} plan set: ${dishSummary}${intent.mood ? ` (${intent.mood})` : ''}. Edit any dish from the picker.`
     }
     // B7 fix: preference-record intent writes a voter-keyed meal preference
     // (voter_meal_preferences). The parser only emits this when the user
@@ -1596,10 +1607,10 @@ function App() {
             const tally = poll ? (tallyByPoll[poll.id] ?? {}) : {}
             const votesCast = Object.keys(tally).length
             const voterCount = voters.length
-            // Engine-suggested fallback for the "Suggest one" button. Only
-            // surfaces a single dish — the user is in charge, the engine
-            // just nudges when they're stuck.
-            const suggested = picks.length === 0 && mealOptions.length > 0 ? mealOptions[0].dishes[0] : null
+            // F5 fix: removed single-dish `suggested` derivation here. Empty
+            // slots now open the curated-menu picker (see slot-empty-actions
+            // below), which surfaces the full multi-dish menu the engine
+            // computes instead of one dish at a time.
             const slotNoun = s === 'BREAKFAST' ? "Today's breakfast" : s === 'LUNCH' ? "Today's lunch" : "Tonight's dinner"
             return <article className={`slot-canvas-card ${selectedSlot === s ? 'active' : ''} ${plan?.confirmed_at ? 'confirmed' : ''} ${poll ? 'has-poll' : ''} ${poll?.closed_at ? 'closed-poll' : ''}`} key={s}>
               <header>
@@ -1699,21 +1710,59 @@ function App() {
               )}
               {picks.length === 0 ? (
                 <div className="slot-empty">
-                  <p>Empty. Tap <b>+ Add</b> above to pick a dish.</p>
-                  {suggested && <button
-                    className="link-button suggest-one"
-                    onClick={async () => {
-                      if (!household) return
-                      try {
-                        const newPick: api.ManualDish = { dish_id: suggested.id, name: suggested.name, source: 'curated' }
-                        const updated = await api.setMealPlanManualDishes(household.id, todayKey, s, [newPick])
-                        setMealPlansByDate((prev) => ({
-                          ...prev,
-                          [todayKey]: [...(prev[todayKey] ?? []).filter((p) => p.slot !== s), updated],
-                        }))
-                      } catch (e) { console.error('Suggest-one write failed:', e) }
-                    }}
-                  ><Sparkles size={14} /> Suggest one for me ({suggested.name})</button>}
+                  <p>Empty. Tap <b>+ Add</b> above to pick a dish, or open the curated menu below.</p>
+                  {mealOptions.length > 0 && (
+                    <div className="slot-empty-actions">
+                      {/* F5 fix: was 'Suggest one for me' writing a single dish per
+                          click — defeated the curated-menu intent. Now opens the picker
+                          pre-loaded with the full curated menu (3 multi-dish options),
+                          editable, so the user sees and adjusts the whole plan. */}
+                      <button
+                        className="primary small slot-curated-cta"
+                        onClick={() => {
+                          if (!household) return
+                          // Flatten the top N mealOptions into a multi-select seed
+                          // for the picker. Cap at 3 options × 4 dishes so the user
+                          // isn't overwhelmed on first open. Edits survive across
+                          // tab switches because the modal owns `selected`.
+                          const topMeals = mealOptions.slice(0, 3)
+                          const preseed: api.ManualDish[] = topMeals.flatMap((meal) =>
+                            meal.dishes.map((d) => ({ dish_id: d.id, name: d.name, source: 'curated' as const }))
+                          )
+                          setSelectedSlot(s)
+                          setAddPickerSelected(preseed)
+                          setAddPickerSearch('')
+                          // F5 tab hint: switch to 'curated' tab so the user lands
+                          // on the dishes we're pre-selecting. Modal honours this on
+                          // its first render (see AddDishModal).
+                          setAddPickerTab('curated')
+                          setAddPickerAdhoc('')
+                          setAddPickerOpen(s)
+                        }}
+                      ><Sparkles size={14} /> Curated menu ({mealOptions.length} options)</button>
+                      {/* Fast-path kept for users who genuinely want a single dish
+                          one-tap. Labelled clearly so it doesn't look like the curated
+                          menu. */}
+                      {(() => {
+                        const suggested = mealOptions[0]?.dishes[0]
+                        if (!suggested) return null
+                        return <button
+                          className="link-button suggest-one"
+                          onClick={async () => {
+                            if (!household) return
+                            try {
+                              const newPick: api.ManualDish = { dish_id: suggested.id, name: suggested.name, source: 'curated' }
+                              const updated = await api.setMealPlanManualDishes(household.id, todayKey, s, [newPick])
+                              setMealPlansByDate((prev) => ({
+                                ...prev,
+                                [todayKey]: [...(prev[todayKey] ?? []).filter((p) => p.slot !== s), updated],
+                              }))
+                            } catch (e) { console.error('Suggest-one write failed:', e) }
+                          }}
+                        ><Sparkles size={14} /> Just one: {suggested.name}</button>
+                      })()}
+                    </div>
+                  )}
                 </div>
               ) : (
                 <ul className="slot-dishes">
@@ -3165,6 +3214,11 @@ type AddDishModalProps = {
 
 function AddDishModal(props: AddDishModalProps) {
   const { slot, slotLabel, userMeals, householdMeals, preferences, selected, onChangeSelected, search, onChangeSearch, tab, onChangeTab, adhoc, onChangeAdhoc, saving, onClose, onSave, onPromoteCuratedToRecipe } = props
+
+  // F5 fix: when the modal opens with pre-seeded selections (the curated
+  // menu CTA), default to the 'curated' tab so the user immediately sees
+  // the dishes we're suggesting. Falls back to 'yours' when no pre-seed
+  // is present (the legacy single-dish picker flow).
 
   // Section lists. The `selected` array is the source of truth — the
   // modal keeps it across tab switches so a user can browse multiple
