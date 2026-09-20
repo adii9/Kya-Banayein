@@ -878,7 +878,7 @@ function App() {
   // composed meals, curated dishes, and an ad-hoc "add a new dish" form.
   const [addPickerOpen, setAddPickerOpen] = useState<api.MealSlot | null>(null)
   const [addPickerSearch, setAddPickerSearch] = useState('')
-  const [addPickerTab, setAddPickerTab] = useState<'yours' | 'curated' | 'new'>('yours')
+  const [addPickerTab, setAddPickerTab] = useState<'yours' | 'composed' | 'curated' | 'new'>('yours')
   const [addPickerSelected, setAddPickerSelected] = useState<api.ManualDish[]>([])
   const [addPickerAdhoc, setAddPickerAdhoc] = useState('')
   const [addPickerSaving, setAddPickerSaving] = useState(false)
@@ -1914,9 +1914,9 @@ function App() {
           slot={addPickerOpen}
           slotLabel={addPickerOpen === 'BREAKFAST' ? 'breakfast' : addPickerOpen === 'LUNCH' ? 'lunch' : 'dinner'}
           userMeals={userMeals}
+          householdMeals={householdMeals}
           inventory={inventory}
           preferences={preferences}
-          voterPreferences={voterPreferences}
           selected={addPickerSelected}
           onChangeSelected={setAddPickerSelected}
           search={addPickerSearch}
@@ -1984,9 +1984,9 @@ function App() {
             return `🗳 Vote on today's ${slotLabel}!\n\nOpen this on your phone (no login needed):\n${APP_BASE_URL}/?join=${household.join_code}\n\nPick your favourite option once it opens. Type your name and tap your pick.`
           })()}
           userMeals={userMeals}
+          householdMeals={householdMeals}
           inventory={inventory}
           preferences={preferences}
-          voterPreferences={voterPreferences}
           onShare={(text) => shareOnWhatsApp(text)}
           onClose={() => setCreatePollOpen(null)}
           onSave={async (options) => {
@@ -3195,17 +3195,15 @@ type AddDishModalProps = {
   slot: api.MealSlot
   slotLabel: string
   userMeals: api.UserMeal[]
+  householdMeals: api.HouseholdMeal[]
   inventory: InventoryItem[]
   preferences: Preferences
-  // Per-(voter, slot) like rows. Used to bump curated suggestions this
-  // household has actually liked — see AddDishModal curated sort.
-  voterPreferences: api.VoterMealPreference[]
   selected: api.ManualDish[]
   onChangeSelected: (next: api.ManualDish[]) => void
   search: string
   onChangeSearch: (s: string) => void
-  tab: 'yours' | 'curated' | 'new'
-  onChangeTab: (t: 'yours' | 'curated' | 'new') => void
+  tab: 'yours' | 'composed' | 'curated' | 'new'
+  onChangeTab: (t: 'yours' | 'composed' | 'curated' | 'new') => void
   adhoc: string
   onChangeAdhoc: (s: string) => void
   saving: boolean
@@ -3215,7 +3213,7 @@ type AddDishModalProps = {
 }
 
 function AddDishModal(props: AddDishModalProps) {
-  const { slot, slotLabel, userMeals, inventory, preferences, voterPreferences, selected, onChangeSelected, search, onChangeSearch, tab, onChangeTab, adhoc, onChangeAdhoc, saving, onClose, onSave, onPromoteCuratedToRecipe } = props
+  const { slot, slotLabel, userMeals, householdMeals, preferences, selected, onChangeSelected, search, onChangeSearch, tab, onChangeTab, adhoc, onChangeAdhoc, saving, onClose, onSave, onPromoteCuratedToRecipe } = props
 
   // F5 fix: when the modal opens with pre-seeded selections (the curated
   // menu CTA), default to the 'curated' tab so the user immediately sees
@@ -3232,50 +3230,17 @@ function AddDishModal(props: AddDishModalProps) {
     return m.name.toLowerCase().includes(search.toLowerCase()) || m.description.toLowerCase().includes(search.toLowerCase())
   })
 
-  // Dislikes for this slot — case-insensitive name match, scoped to the
-  // caller's slot where the dislike row sets one. A dislike without a
-  // slot applies to every meal; one with a slot only fires for that slot.
-  const slotDislikedNames = new Set(
-    (preferences.dislikes ?? [])
-      .filter((d) => !d.slot || d.slot === slot)
-      .map((d) => (d.name ?? '').trim().toLowerCase())
-      .filter(Boolean),
-  )
-  // Likes for this slot: prefer rows that match the slot directly, fall
-  // back to slot-agnostic rows. We sum `strength` across matching voters
-  // so a family of 3 who all like Poha outranks a single weak like.
-  const slotLikesByName = new Map<string, number>()
-  for (const pref of voterPreferences) {
-    if (!pref.meal_name) continue
-    if (pref.slot && pref.slot !== slot) continue
-    const key = pref.meal_name.trim().toLowerCase()
-    if (!key) continue
-    slotLikesByName.set(key, (slotLikesByName.get(key) ?? 0) + (pref.strength ?? 1))
-  }
-  // Kitchen-feasibility map keyed by ingredientId. A dish is "fully
-  // available" iff every required ingredient has stock >= quantity.
-  const stockById = new Map(inventory.map((i) => [i.id, i.quantity]))
-  const dishFullyAvailable = (d: { ingredients: { ingredientId: string; quantity: number }[] }) =>
-    d.ingredients.length === 0 || d.ingredients.every((u) => (stockById.get(u.ingredientId) ?? 0) >= u.quantity)
-  const searchLower = search.trim().toLowerCase()
-  const curated = DISHES
-    .filter((d) => !preferences.vegetarian || d.vegetarian)
-    .filter((d) => !slotDislikedNames.has(d.name.toLowerCase()))
-    .filter((d) => !searchLower || d.name.toLowerCase().includes(searchLower) || d.description.toLowerCase().includes(searchLower))
-    // Ranked: kitchen-feasible first, then by like-strength descending,
-    // then by total cook time so quick meals surface on ties. Ties within
-    // a tier preserve curated DISHES order so familiar names stay where
-    // users expect them.
-    .slice()
-    .sort((a, b) => {
-      const aAvail = dishFullyAvailable(a) ? 1 : 0
-      const bAvail = dishFullyAvailable(b) ? 1 : 0
-      if (aAvail !== bAvail) return bAvail - aAvail
-      const aLikes = slotLikesByName.get(a.name.toLowerCase()) ?? 0
-      const bLikes = slotLikesByName.get(b.name.toLowerCase()) ?? 0
-      if (aLikes !== bLikes) return bLikes - aLikes
-      return a.time - b.time
-    })
+  const composedMeals = householdMeals.filter((m) => {
+    if (!search.trim()) return true
+    const names = Array.isArray(m.dishes) ? m.dishes.map((d: any) => d.name).join(' ').toLowerCase() : ''
+    return (m.name ?? '').toLowerCase().includes(search.toLowerCase()) || names.includes(search.toLowerCase())
+  })
+
+  const curated = DISHES.filter((d) => {
+    if (preferences.vegetarian && !d.vegetarian) return false
+    if (!search.trim()) return true
+    return d.name.toLowerCase().includes(search.toLowerCase()) || d.description.toLowerCase().includes(search.toLowerCase())
+  })
 
   const isSelected = (key: string) => selected.some((d) => `${d.source}:${d.dish_id ?? d.name}` === key)
   const toggleSelected = (dish: api.ManualDish) => {
@@ -3286,6 +3251,7 @@ function AddDishModal(props: AddDishModalProps) {
 
   const counts = {
     yours: userMeals.length,
+    composed: householdMeals.length,
     curated: curated.length,
   }
 
@@ -3329,8 +3295,11 @@ function AddDishModal(props: AddDishModalProps) {
         <button role="tab" aria-selected={tab === 'yours'} className={tab === 'yours' ? 'active' : ''} onClick={() => onChangeTab('yours')}>
           Your recipes {counts.yours > 0 && <span className="count">{counts.yours}</span>}
         </button>
+        <button role="tab" aria-selected={tab === 'composed'} className={tab === 'composed' ? 'active' : ''} onClick={() => onChangeTab('composed')}>
+          Composed {counts.composed > 0 && <span className="count">{counts.composed}</span>}
+        </button>
         <button role="tab" aria-selected={tab === 'curated'} className={tab === 'curated' ? 'active' : ''} onClick={() => onChangeTab('curated')}>
-          Suggested {counts.curated > 0 && <span className="count">{counts.curated}</span>}
+          Curated {counts.curated > 0 && <span className="count">{counts.curated}</span>}
         </button>
         <button role="tab" aria-selected={tab === 'new'} className={tab === 'new' ? 'active' : ''} onClick={() => onChangeTab('new')}>
           New dish
@@ -3355,27 +3324,38 @@ function AddDishModal(props: AddDishModalProps) {
             </ul>
         )}
 
+        {tab === 'composed' && (composedMeals.length === 0
+          ? <p className="picker-empty">No composed meals yet. Bundle 2+ dishes in the Recipes tab → Composed meals.</p>
+          : <ul className="picker-list">
+              {composedMeals.map((m) => {
+                const dish: api.ManualDish = { dish_id: m.id, name: m.name, source: 'household_meal' }
+                const key = `${dish.source}:${dish.dish_id}`
+                const dishList = Array.isArray(m.dishes) ? m.dishes.map((d: any) => d.name).join(' + ') : ''
+                return <li key={m.id}>
+                  <label className={`picker-row ${isSelected(key) ? 'checked' : ''}`}>
+                    <input type="checkbox" checked={isSelected(key)} onChange={() => toggleSelected(dish)} />
+                    <span className="dish-dot" style={{ background: sourceColor('household_meal') }} />
+                    <span className="picker-row-text"><b>{m.name}</b><small>{dishList || m.description || 'Composed meal'}</small></span>
+                  </label>
+                </li>
+              })}
+            </ul>
+        )}
+
         {tab === 'curated' && (curated.length === 0
-          ? <p className="picker-empty">No suggested dishes match. Try clearing the search, or pick something you have in your kitchen.</p>
+          ? <p className="picker-empty">No curated dishes match. Try clearing the search.</p>
           : <ul className="picker-list">
               {curated.map((d) => {
                 const dish: api.ManualDish = { dish_id: d.id, name: d.name, source: 'curated' }
                 const key = `${dish.source}:${dish.dish_id}`
                 const alreadyInRecipes = userMealNamesLower.has(d.name.toLowerCase())
-                const inKitchen = dishFullyAvailable(d)
-                const likeScore = slotLikesByName.get(d.name.toLowerCase()) ?? 0
                 return <li key={d.id}>
                   <label className={`picker-row ${isSelected(key) ? 'checked' : ''}`}>
                     <input type="checkbox" checked={isSelected(key)} onChange={() => toggleSelected(dish)} />
                     <span className="dish-dot" style={{ background: d.color }} />
                     <span className="picker-row-text">
                       <b>{d.name}</b>
-                      <small>
-                        {d.description}
-                        {inKitchen && <span className="in-kitchen-tag"> · ✓ in your kitchen</span>}
-                        {likeScore > 0 && <span className="like-tag"> · 👍 liked ({likeScore})</span>}
-                        {!inKitchen && likeScore === 0 && !alreadyInRecipes && ' — needs items you don\'t have'}
-                      </small>
+                      <small>{d.description}{alreadyInRecipes ? '' : ' — not in your recipes yet'}</small>
                     </span>
                   </label>
                   {!alreadyInRecipes && <button
@@ -3461,9 +3441,9 @@ type CreatePollModalProps = {
   joiningUrl: string
   shareText: string
   userMeals: api.UserMeal[]
+  householdMeals: api.HouseholdMeal[]
   inventory: InventoryItem[]
   preferences: Preferences
-  voterPreferences: api.VoterMealPreference[]
   onShare: (text: string) => void
   onClose: () => void
   onSave: (options: api.PollOption[]) => Promise<void>
@@ -3471,7 +3451,7 @@ type CreatePollModalProps = {
 }
 
 function CreatePollModal(props: CreatePollModalProps) {
-  const { slot, slotLabel, picks, existingPoll, votersCount, voters, joiningUrl, shareText, userMeals, inventory, preferences, voterPreferences, onShare, onClose, onSave, onPromoteCuratedToRecipe } = props
+  const { slot, slotLabel, picks, existingPoll, votersCount, voters, joiningUrl, shareText, userMeals, householdMeals, inventory, preferences, onShare, onClose, onSave, onPromoteCuratedToRecipe } = props
 
   const newOption = (title: string, dishes: api.ManualDish[]): api.PollOption => ({
     id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `opt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
@@ -3501,7 +3481,7 @@ function CreatePollModal(props: CreatePollModalProps) {
   const [pickerOpenFor, setPickerOpenFor] = useState<string | null>(null)
   const [pickerSelected, setPickerSelected] = useState<api.ManualDish[]>([])
   const [pickerSearch, setPickerSearch] = useState('')
-  const [pickerTab, setPickerTab] = useState<'yours' | 'curated' | 'new'>('yours')
+  const [pickerTab, setPickerTab] = useState<'yours' | 'composed' | 'curated' | 'new'>('yours')
   const [pickerAdhoc, setPickerAdhoc] = useState('')
 
   useEffect(() => {
@@ -3688,9 +3668,9 @@ function CreatePollModal(props: CreatePollModalProps) {
       slot={slot}
       slotLabel={slotLabel}
       userMeals={userMeals}
+      householdMeals={householdMeals}
       inventory={inventory}
       preferences={preferences}
-      voterPreferences={voterPreferences}
       selected={pickerSelected}
       onChangeSelected={setPickerSelected}
       search={pickerSearch}
