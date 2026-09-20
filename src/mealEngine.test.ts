@@ -1,37 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { applyDishOverrides, buildDishOverrideMap, confirmMeal, DEFAULT_INVENTORY, DISHES, getOrderSuggestions, mealTitleFromDishes, recommendMeals, type InventoryItem, type UserDish } from './mealEngine'
+import { applyDishOverrides, buildDishOverrideMap, confirmMeal, DISHES, getOrderSuggestions, mealTitleFromDishes, recommendMeals, type InventoryItem, type UserDish } from './mealEngine'
 
 describe('recommendMeals', () => {
   it('returns the user-selected number of meal options with the selected number of dishes', () => {
-    // Full default pantry covers every curated dish, so the strict
-    // kitchen filter still surfaces the requested number of meals.
-    const meals = recommendMeals({ suggestionCount: 3, dishesPerMeal: 2, vegetarian: true }, DEFAULT_INVENTORY)
+    const meals = recommendMeals({ suggestionCount: 3, dishesPerMeal: 2, vegetarian: true }, [])
 
     expect(meals).toHaveLength(3)
     expect(meals.every((meal) => meal.dishes.length === 2)).toBe(true)
     expect(meals.flatMap((meal) => meal.dishes).every((dish) => dish.vegetarian)).toBe(true)
-  })
-
-  it('returns empty curated list when no ingredients are in stock', () => {
-    // Strict kitchen filter: empty pantry → empty curated menu so we
-    // don't suggest dishes the user can't actually cook. The UI renders
-    // an empty-state prompt instead of fabricated fallbacks.
-    const meals = recommendMeals({ suggestionCount: 3, dishesPerMeal: 2, vegetarian: true }, [])
-    expect(meals).toHaveLength(0)
-  })
-
-  it('curated menu only contains dishes that are 100% in stock', () => {
-    // Half-stock: tomato is in the kitchen but toor-dal isn't. Dal-tadka
-    // needs both, so it must be excluded. Roti only needs atta and is
-    // therefore eligible.
-    const inventory: InventoryItem[] = [
-      { id: 'atta', name: 'Atta', quantity: 5000, unit: 'g', category: 'monthly', reorderAt: 800, targetStock: 5000 },
-      { id: 'tomato', name: 'Tomato', quantity: 200, unit: 'g', category: 'weekly', reorderAt: 100, targetStock: 1000 },
-    ]
-    const meals = recommendMeals({ suggestionCount: 5, dishesPerMeal: 1, vegetarian: true }, inventory, [], {}, 'LUNCH')
-    const dishIds = new Set(meals.flatMap((m) => m.dishes).map((d) => d.id))
-    expect(dishIds.has('dal-tadka')).toBe(false)
-    expect(dishIds.has('roti')).toBe(true)
   })
 
   it('filters user meals by household vegetarian preference', () => {
@@ -47,7 +23,7 @@ describe('recommendMeals', () => {
   })
 
   it('derives meal titles from actual dishes instead of cycling generic labels', () => {
-    const meals = recommendMeals({ suggestionCount: 2, dishesPerMeal: 1, vegetarian: true }, DEFAULT_INVENTORY)
+    const meals = recommendMeals({ suggestionCount: 2, dishesPerMeal: 1, vegetarian: true }, [])
     // Single-dish meals take the dish name directly.
     expect(meals[0].title).not.toBe('Ghar ka favourite')
     expect(meals[0].title.length).toBeGreaterThan(0)
@@ -57,8 +33,7 @@ describe('recommendMeals', () => {
     const overrides = buildDishOverrideMap([
       { dish_id: 'chicken-curry', hidden: true, override: null },
     ])
-    // Full pantry so the strict kitchen filter doesn't trip the test.
-    const meals = recommendMeals({ suggestionCount: 5, dishesPerMeal: 5, vegetarian: false }, DEFAULT_INVENTORY, [], overrides)
+    const meals = recommendMeals({ suggestionCount: 5, dishesPerMeal: 5, vegetarian: false }, [], [], overrides)
     expect(meals.flatMap((m) => m.dishes).some((d) => d.id === 'chicken-curry')).toBe(false)
     // Sanity: other curated dishes still surface.
     expect(meals.flatMap((m) => m.dishes).some((d) => d.id === 'egg-bhurji')).toBe(true)
@@ -68,8 +43,8 @@ describe('recommendMeals', () => {
     // The bug report: tapping Breakfast / Lunch / Dinner yielded the
     // same dish combinations. With slot-tagged DISHES, breakfast
     // should pull Poha/Upma/Idli/Besan Chilla etc., never Chicken.
-    const breakfast = recommendMeals({ suggestionCount: 6, dishesPerMeal: 3, vegetarian: false }, DEFAULT_INVENTORY, [], {}, 'BREAKFAST')
-    const dinner = recommendMeals({ suggestionCount: 6, dishesPerMeal: 3, vegetarian: false }, DEFAULT_INVENTORY, [], {}, 'DINNER')
+    const breakfast = recommendMeals({ suggestionCount: 6, dishesPerMeal: 3, vegetarian: false }, [], [], {}, 'BREAKFAST')
+    const dinner = recommendMeals({ suggestionCount: 6, dishesPerMeal: 3, vegetarian: false }, [], [], {}, 'DINNER')
     const breakfastIds = new Set(breakfast.flatMap((m) => m.dishes).map((d) => d.id))
     const dinnerIds = new Set(dinner.flatMap((m) => m.dishes).map((d) => d.id))
     // Chicken-curry is lunch/dinner only — must NOT appear in breakfast
@@ -87,27 +62,28 @@ describe('recommendMeals', () => {
   })
 
   it('meal IDs are slot-prefixed so votes and plans don\'t collide across slots', () => {
-    const breakfast = recommendMeals({ suggestionCount: 3, dishesPerMeal: 2, vegetarian: true }, DEFAULT_INVENTORY, [], {}, 'BREAKFAST')
-    const dinner = recommendMeals({ suggestionCount: 3, dishesPerMeal: 2, vegetarian: true }, DEFAULT_INVENTORY, [], {}, 'DINNER')
+    const breakfast = recommendMeals({ suggestionCount: 3, dishesPerMeal: 2, vegetarian: true }, [], [], {}, 'BREAKFAST')
+    const dinner = recommendMeals({ suggestionCount: 3, dishesPerMeal: 2, vegetarian: true }, [], [], {}, 'DINNER')
     expect(breakfast[0].id).toMatch(/^BREAKFAST-meal-/)
     expect(dinner[0].id).toMatch(/^DINNER-meal-/)
     expect(breakfast[0].id).not.toBe(dinner[0].id)
   })
 
-  it('returns empty curated list when no slot-tagged dish matches', () => {
-    // Empty kitchen: the strict filter leaves both breakfast and the
-    // full curated pool empty. Composed meals (if any) would still
-    // surface, but no composed meal is passed here so the result is
-    // purely empty. UI takes over with the empty-state prompt.
+  it('falls back to the full pool when no slot-tagged dish matches (empty kitchen edge case)', () => {
+    // Empty kitchen + breakfast → no dish has stock, but the engine
+    // still returns a result so the screen isn't blank. The first
+    // suggestion may repeat (since rank has 1 item) but the title
+    // should still be valid.
     const meals = recommendMeals({ suggestionCount: 3, dishesPerMeal: 2, vegetarian: true }, [], [], {}, 'BREAKFAST')
-    expect(meals).toHaveLength(0)
+    expect(meals.length).toBe(3)
+    expect(meals[0].title.length).toBeGreaterThan(0)
   })
 
   it('replaces curated fields with the household override', () => {
     const overrides = buildDishOverrideMap([
       { dish_id: 'egg-bhurji', hidden: false, override: { name: 'Anda Bhurji (light)', time: 12 } },
     ])
-    const meals = recommendMeals({ suggestionCount: 5, dishesPerMeal: 5, vegetarian: false }, DEFAULT_INVENTORY, [], overrides)
+    const meals = recommendMeals({ suggestionCount: 5, dishesPerMeal: 5, vegetarian: false }, [], [], overrides)
     const egg = meals.flatMap((m) => m.dishes).find((d) => d.id === 'egg-bhurji')
     expect(egg?.name).toBe('Anda Bhurji (light)')
     expect(egg?.time).toBe(12)
@@ -126,7 +102,7 @@ describe('recommendMeals', () => {
       ],
       match_count: 80,
     }]
-    const meals = recommendMeals({ suggestionCount: 3, dishesPerMeal: 2, vegetarian: false }, DEFAULT_INVENTORY, [], {}, 'DINNER', composed)
+    const meals = recommendMeals({ suggestionCount: 3, dishesPerMeal: 2, vegetarian: false }, [], [], {}, 'DINNER', composed)
     // First option is the composed meal, then the 3 auto-bundled.
     expect(meals[0].id).toBe('composed-cm-1')
     expect(meals[0].title).toBe('Cucumber + Salad + Anda Bhurji + Roti')

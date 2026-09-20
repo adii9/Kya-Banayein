@@ -213,27 +213,33 @@ export function recommendMeals(
   const slotEligible = (d: Dish) => !slot || !d.slots || d.slots.includes(slot)
   const eligible = allDishes.filter((dish) => slotEligible(dish) && (!preferences.vegetarian || dish.vegetarian))
   const stock = new Map(inventory.map((item) => [item.id, item.quantity]))
-  // Strict kitchen filter: a curated suggestion must be fully makeable
-  // from what's in the kitchen. A dish with even one missing ingredient
-  // is dropped from the curated menu entirely — the Today screen's job
-  // is to suggest what you can cook right now, not a wishlist. Custom
-  // `userMeals` with empty ingredients always pass (creator will see
-  // an empty pantry warning, but we don't silently hide their recipes).
-  // Composed meals (already resolved into `composedOptions` above) keep
-  // showing regardless — they go through their own match_count audit.
-  const fullyAvailable = (d: Dish) =>
-    d.ingredients.length === 0 || d.ingredients.every((use) => (stock.get(use.ingredientId) ?? 0) >= use.quantity)
-  const inStock = eligible.filter(fullyAvailable)
-  const ranked = inStock
-    .map((dish) => ({ dish, score: dish.ingredients.length === 0 ? 1 : dish.ingredients.reduce((sum, use) => sum + Math.min((stock.get(use.ingredientId) ?? 0) / use.quantity, 1), 0) / Math.max(dish.ingredients.length, 1) }))
+  const ranked = eligible
+    .map((dish) => ({ dish, score: dish.ingredients.reduce((sum, use) => sum + Math.min((stock.get(use.ingredientId) ?? 0) / use.quantity, 1), 0) / Math.max(dish.ingredients.length, 1) }))
     .sort((a, b) => b.score - a.score || a.dish.time - b.dish.time)
     .map(({ dish }) => dish)
 
-  // Empty kitchen → empty curated menu. The UI's slot canvas renders an
-  // empty-state prompt ("Add pantry items or pick dishes manually") when
-  // no curated options come back. Composed meals still surface because
-  // they're user-authored; they don't depend on this filter.
-  if (ranked.length === 0) return composedOptions
+  // Edge case: if the slot filter leaves us with zero eligible dishes
+  // (e.g. breakfast with an empty kitchen + no breakfast-tagged
+  // dishes), fall back to the full slot-eligible pool so the user
+  // still sees something instead of a blank screen.
+  if (ranked.length === 0) {
+    const fallback = allDishes.filter((dish) => !preferences.vegetarian || dish.vegetarian)
+    if (fallback.length === 0) return composedOptions
+    // Sort by total cook time so the user at least sees quick options.
+    fallback.sort((a, b) => a.time - b.time)
+    const curatedFallback = Array.from({ length: Math.max(1, preferences.suggestionCount) }, (_, optionIndex) => {
+      const dishes = Array.from({ length: Math.max(1, preferences.dishesPerMeal) }, (_, dishIndex) => fallback[(optionIndex * preferences.dishesPerMeal + dishIndex) % fallback.length])
+      return {
+        id: `${slot ?? 'any'}-meal-${optionIndex}`,
+        title: mealTitleFromDishes(dishes),
+        note: 'Add to your kitchen to get a real suggestion here.',
+        dishes,
+        totalTime: Math.max(...dishes.map((dish) => dish.time)),
+        match: 0,
+      }
+    })
+    return [...composedOptions, ...curatedFallback]
+  }
 
   const slotPrefix = slot ?? 'any'
   const curatedOptions = Array.from({ length: Math.max(1, preferences.suggestionCount) }, (_, optionIndex) => {
@@ -248,7 +254,7 @@ export function recommendMeals(
       // the dish name; multi-dish meals get a " + " joined title. This
       // makes the home page actually reflect what you're being offered.
       title: mealTitleFromDishes(dishes),
-      note: 'Ready to cook from your kitchen',
+      note: match >= 80 ? 'Mostly from your kitchen' : match >= 50 ? 'A few items needed' : 'Add to your next order',
       dishes,
       totalTime: Math.max(...dishes.map((dish) => dish.time)),
       match,
