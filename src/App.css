@@ -926,3 +926,10 @@ header .brand small { color: var(--muted); }
 .voter-name-details { margin-top: 12px; padding: 12px 0 0; border-top: 1px solid var(--line); }
 .voter-name-details summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px 0; }
 .voter-name-details[open] summary { margin-bottom: 12px; }
+/* Curated-picker badges: visual cues for kitchen-feasibility & like score.
+   `.in-kitchen-tag` shows the green tick so users trust the suggestion;
+   `.like-tag` carries a thumbs-up + numeric score so families understand
+   why a dish rose to the top of the list. Both stay muted so the dish
+   description remains the primary text on the row. */
+.picker-row .in-kitchen-tag { color: var(--green); font-weight: 600; white-space: normal; }
+.picker-row .like-tag { color: var(--orange); font-weight: 600; white-space: normal; }
