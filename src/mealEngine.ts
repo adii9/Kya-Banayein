@@ -375,13 +375,15 @@ export function isDishMakeable(dish: { ingredients: IngredientUse[] }, stock: Ma
 // down to only those makeable right now. Order is preserved; the
 // caller decides what to do with the survivors.
 //
-// `AnyDish` is structural: the kitchen check only reads `.ingredients`,
-// so the type intentionally accepts any object that has an ingredients
-// array. Curated `Dish` rows satisfy this directly; user_meals and
-// composed rows are cast at the call site so missing fields (e.g.
-// composed meals omit `time`/`color`) don't trip the checker.
+// `KitchenChecked` is structural: the kitchen check only reads
+// `.ingredients`, so the type intentionally accepts any object that
+// has an ingredients array. Curated `Dish` rows satisfy this directly;
+// user_meals and composed rows are cast at the call site so missing
+// fields (e.g. composed meals omit `time`/`color`) don't trip the
+// checker. The generic `<T>` is propagated so the resulting array
+// retains the call-site element shape (dish names, ids, etc.).
 export type KitchenChecked = { ingredients: IngredientUse[] }
-export function makeableFromKitchen<T extends KitchenChecked>(inventory: InventoryItem[], dishes: T[]): T[] {
+export function makeableFromKitchen<T extends KitchenChecked>(inventory: InventoryItem[], dishes: readonly T[]): T[] {
   const stock = new Map(inventory.map((item) => [item.id, item.quantity]))
-  return dishes.filter((d) => isDishMakeable(d, stock))
+  return dishes.filter((d) => isDishMakeable(d, stock)) as T[]
 }

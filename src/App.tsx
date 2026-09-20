@@ -880,7 +880,7 @@ function App() {
   const [addPickerOpen, setAddPickerOpen] = useState<api.MealSlot | null>(null)
   const [addPickerSearch, setAddPickerSearch] = useState('')
   const [addPickerTab, setAddPickerTab] = useState<'yours' | 'curated' | 'new'>('yours')
-  // Picker overlay mode. 'tabs' = the normal four-tab view.
+  // Picker overlay mode. 'tabs' = the normal three-tab view.
   // 'makeable' = the secondary "what can I cook right now" pane that
   // overlays the tab body. The makeable view shares the same `selected`
   // array as the tabs, so picks made there persist when the user
@@ -1924,6 +1924,7 @@ function App() {
           householdMeals={householdMeals}
           inventory={inventory}
           preferences={preferences}
+          voterPreferences={voterPreferences}
           selected={addPickerSelected}
           onChangeSelected={setAddPickerSelected}
           search={addPickerSearch}
@@ -1996,6 +1997,7 @@ function App() {
           householdMeals={householdMeals}
           inventory={inventory}
           preferences={preferences}
+          voterPreferences={voterPreferences}
           onShare={(text) => shareOnWhatsApp(text)}
           onClose={() => setCreatePollOpen(null)}
           onSave={async (options) => {
@@ -3204,9 +3206,15 @@ type AddDishModalProps = {
   slot: api.MealSlot
   slotLabel: string
   userMeals: api.UserMeal[]
+  // Composed meals (multi-dish bundles) appear in the makeable-now
+  // overlay when their child dishes' ingredients are all in stock. The
+  // Curated/Suggested tab ignores them — that view is single-dish only.
   householdMeals: api.HouseholdMeal[]
   inventory: InventoryItem[]
   preferences: Preferences
+  // Per-(voter, slot) like rows. Used to bump curated suggestions this
+  // household has actually liked — see AddDishModal curated sort.
+  voterPreferences: api.VoterMealPreference[]
   selected: api.ManualDish[]
   onChangeSelected: (next: api.ManualDish[]) => void
   search: string
@@ -3226,7 +3234,7 @@ type AddDishModalProps = {
 }
 
 function AddDishModal(props: AddDishModalProps) {
-  const { slot, slotLabel, userMeals, householdMeals, inventory, preferences, selected, onChangeSelected, search, onChangeSearch, tab, onChangeTab, view, onChangeView, adhoc, onChangeAdhoc, saving, onClose, onSave, onPromoteCuratedToRecipe } = props
+  const { slot, slotLabel, userMeals, householdMeals, inventory, preferences, voterPreferences, selected, onChangeSelected, search, onChangeSearch, tab, onChangeTab, view, onChangeView, adhoc, onChangeAdhoc, saving, onClose, onSave, onPromoteCuratedToRecipe } = props
 
   // F5 fix: when the modal opens with pre-seeded selections (the curated
   // menu CTA), default to the 'curated' tab so the user immediately sees
@@ -3243,44 +3251,80 @@ function AddDishModal(props: AddDishModalProps) {
       return m.name.toLowerCase().includes(search.toLowerCase()) || m.description.toLowerCase().includes(search.toLowerCase())
     })
 
-    const curated = DISHES.filter((d) => {
-      if (preferences.vegetarian && !d.vegetarian) return false
-      if (!search.trim()) return true
-      return d.name.toLowerCase().includes(search.toLowerCase()) || d.description.toLowerCase().includes(search.toLowerCase())
+// Dislikes for this slot — case-insensitive name match, scoped to the
+  // caller's slot where the dislike row sets one. A dislike without a
+  // slot applies to every meal; one with a slot only fires for that slot.
+  const slotDislikedNames = new Set(
+    (preferences.dislikes ?? [])
+      .filter((d) => !d.slot || d.slot === slot)
+      .map((d) => (d.name ?? '').trim().toLowerCase())
+      .filter(Boolean),
+  )
+  // Likes for this slot: prefer rows that match the slot directly, fall
+  // back to slot-agnostic rows. We sum `strength` across matching voters
+  // so a family of 3 who all like Poha outranks a single weak like.
+  const slotLikesByName = new Map<string, number>()
+  for (const pref of voterPreferences) {
+    if (!pref.meal_name) continue
+    if (pref.slot && pref.slot !== slot) continue
+    const key = pref.meal_name.trim().toLowerCase()
+    if (!key) continue
+    slotLikesByName.set(key, (slotLikesByName.get(key) ?? 0) + (pref.strength ?? 1))
+  }
+  // Kitchen-feasibility map keyed by ingredientId. A dish is "fully
+  // available" iff every required ingredient has stock >= quantity.
+  // Reused by both the curated sort and the makeable-now overlay.
+  const stockById = new Map(inventory.map((i) => [i.id, i.quantity]))
+  const dishFullyAvailable = (d: { ingredients: { ingredientId: string; quantity: number }[] }) =>
+    d.ingredients.length === 0 || d.ingredients.every((u) => (stockById.get(u.ingredientId) ?? 0) >= u.quantity)
+  const searchLower = search.trim().toLowerCase()
+  const curated = DISHES
+    .filter((d) => !preferences.vegetarian || d.vegetarian)
+    .filter((d) => !slotDislikedNames.has(d.name.toLowerCase()))
+    .filter((d) => !searchLower || d.name.toLowerCase().includes(searchLower) || d.description.toLowerCase().includes(searchLower))
+    // Ranked: kitchen-feasible first, then by like-strength descending,
+    // then by total cook time so quick meals surface on ties. Ties within
+    // a tier preserve curated DISHES order so familiar names stay where
+    // users expect them.
+    .slice()
+    .sort((a, b) => {
+      const aAvail = dishFullyAvailable(a) ? 1 : 0
+      const bAvail = dishFullyAvailable(b) ? 1 : 0
+      if (aAvail !== bAvail) return bAvail - aAvail
+      const aLikes = slotLikesByName.get(a.name.toLowerCase()) ?? 0
+      const bLikes = slotLikesByName.get(b.name.toLowerCase()) ?? 0
+      if (aLikes !== bLikes) return bLikes - aLikes
+      return a.time - b.time
     })
 
-    // Makeable-now view: every dish (curated + user recipes + composed)
-    // where every required ingredient is fully in stock. Slot and
-    // vegetarian filters apply at the curated level; user/composed
-    // dishes pass through as-is when they pass the kitchen filter. The
-    // search box also matches in this view (filter-only; doesn't change
-    // the kitchen check). Built lazily — recomputed only when inventory
-    // or the source lists change.
-    const makeableCurated = makeableFromKitchen(inventory, curated)
-      const makeableUserRecipes = makeableFromKitchen(
-        inventory,
-        userMeals.map((m) => ({
-          ...m,
-          // user_meals.color is nullable; coerce so the makeable check
-          // doesn't trip on it. The kitchen check only needs ingredients.
-          color: m.color ?? '',
-          ingredients: Array.isArray((m as any).ingredients) ? (m as any).ingredients : [],
-        })),
-      ).filter((m) => !search.trim() || m.name.toLowerCase().includes(search.toLowerCase()))
-      const makeableHouseholdComposed = makeableFromKitchen(
-        inventory,
-        householdMeals.map((m) => {
-          // Composed meals reference dish ids; resolve each to its full
-          // ingredient list by looking it up in DISHES so the kitchen
-          // check sees the underlying ingredients, not the bundle label.
-          const resolved: mealEngine.IngredientUse[] = (Array.isArray(m.dishes) ? m.dishes : []).flatMap((d: any) => {
-            const seed = DISHES.find((s) => s.id === d.id)
-            return seed ? seed.ingredients : []
-          })
-          return { ...m, ingredients: resolved, color: '#888', time: 15, vegetarian: true, kind: 'main' as const }
-        }),
-      ).filter((m) => !search.trim() || m.name.toLowerCase().includes(search.toLowerCase()))
-      const makeableCount = makeableCurated.length + makeableUserRecipes.length + makeableHouseholdComposed.length
+  // Makeable-now overlay: every dish (curated + user recipes + composed
+  // bundles) where every required ingredient is fully in stock. Computed
+  // once per render — the kitchen check is O(dishes × ingredients) and
+  // the lists here are bounded by hand-authored content so a non-memo
+  // recomputation is fine for v1.
+  const makeableCurated = makeableFromKitchen(inventory, curated)
+  const makeableUserRecipes = makeableFromKitchen(
+    inventory,
+    userMeals.map((m) => ({
+      ...m,
+      color: m.color ?? '',
+      ingredients: Array.isArray((m as any).ingredients) ? (m as any).ingredients : [],
+    })),
+  ).filter((m) => !search.trim() || m.name.toLowerCase().includes(search.toLowerCase()))
+  const makeableHouseholdComposed = makeableFromKitchen(
+    inventory,
+    householdMeals.map((m) => {
+      // Composed meals reference dish ids; resolve each to its full
+      // ingredient list by looking it up in DISHES so the kitchen
+      // check sees the underlying ingredients, not the bundle label.
+      const resolved: mealEngine.IngredientUse[] = (Array.isArray(m.dishes) ? m.dishes : []).flatMap((d: any) => {
+        const seed = DISHES.find((s) => s.id === d.id)
+        return seed ? seed.ingredients : []
+      })
+      return { ...m, ingredients: resolved, color: '#888', time: 15, vegetarian: true, kind: 'main' as const }
+    }),
+  ).filter((m) => !search.trim() || m.name.toLowerCase().includes(search.toLowerCase()))
+  const makeableCount = makeableCurated.length + makeableUserRecipes.length + makeableHouseholdComposed.length
 
     const isSelected = (key: string) => selected.some((d) => `${d.source}:${d.dish_id ?? d.name}` === key)
     const toggleSelected = (dish: api.ManualDish) => {
@@ -3289,10 +3333,10 @@ function AddDishModal(props: AddDishModalProps) {
       else onChangeSelected([...selected, dish])
     }
 
-    const counts = {
-      yours: userMeals.length,
-      curated: curated.length,
-    }
+const counts = {
+    yours: userMeals.length,
+    curated: curated.length,
+  }
 
   const handleAddAdhoc = () => {
     const name = adhoc.trim()
@@ -3346,7 +3390,7 @@ function AddDishModal(props: AddDishModalProps) {
           Your recipes {counts.yours > 0 && <span className="count">{counts.yours}</span>}
         </button>
         <button role="tab" aria-selected={tab === 'curated'} className={tab === 'curated' ? 'active' : ''} onClick={() => onChangeTab('curated')}>
-          Curated {counts.curated > 0 && <span className="count">{counts.curated}</span>}
+          Suggested {counts.curated > 0 && <span className="count">{counts.curated}</span>}
         </button>
         <button role="tab" aria-selected={tab === 'new'} className={tab === 'new' ? 'active' : ''} onClick={() => onChangeTab('new')}>
           New dish
@@ -3423,20 +3467,27 @@ function AddDishModal(props: AddDishModalProps) {
             </ul>
         )}
 
-        {view === 'tabs' && tab === 'curated' && (curated.length === 0
-          ? <p className="picker-empty">No curated dishes match. Try clearing the search.</p>
+{view === 'tabs' && tab === 'curated' && (curated.length === 0
+          ? <p className="picker-empty">No suggested dishes match. Try clearing the search, or pick something you have in your kitchen.</p>
           : <ul className="picker-list">
               {curated.map((d) => {
                 const dish: api.ManualDish = { dish_id: d.id, name: d.name, source: 'curated' }
                 const key = `${dish.source}:${dish.dish_id}`
                 const alreadyInRecipes = userMealNamesLower.has(d.name.toLowerCase())
+                const inKitchen = dishFullyAvailable(d)
+                const likeScore = slotLikesByName.get(d.name.toLowerCase()) ?? 0
                 return <li key={d.id}>
                   <label className={`picker-row ${isSelected(key) ? 'checked' : ''}`}>
                     <input type="checkbox" checked={isSelected(key)} onChange={() => toggleSelected(dish)} />
                     <span className="dish-dot" style={{ background: d.color }} />
                     <span className="picker-row-text">
                       <b>{d.name}</b>
-                      <small>{d.description}{alreadyInRecipes ? '' : ' — not in your recipes yet'}</small>
+                      <small>
+                        {d.description}
+                        {inKitchen && <span className="in-kitchen-tag"> · ✓ in your kitchen</span>}
+                        {likeScore > 0 && <span className="like-tag"> · 👍 liked ({likeScore})</span>}
+                        {!inKitchen && likeScore === 0 && !alreadyInRecipes && ' — needs items you don\'t have'}
+                      </small>
                     </span>
                   </label>
                   {!alreadyInRecipes && <button
@@ -3522,9 +3573,13 @@ type CreatePollModalProps = {
   joiningUrl: string
   shareText: string
   userMeals: api.UserMeal[]
+  // Composed meals are reachable via the makeable-now overlay in the
+  // embedded AddDishModal. Without this prop, composed meals disappear
+  // from the poll-creation flow.
   householdMeals: api.HouseholdMeal[]
   inventory: InventoryItem[]
   preferences: Preferences
+  voterPreferences: api.VoterMealPreference[]
   onShare: (text: string) => void
   onClose: () => void
   onSave: (options: api.PollOption[]) => Promise<void>
@@ -3532,7 +3587,7 @@ type CreatePollModalProps = {
 }
 
 function CreatePollModal(props: CreatePollModalProps) {
-  const { slot, slotLabel, picks, existingPoll, votersCount, voters, joiningUrl, shareText, userMeals, householdMeals, inventory, preferences, onShare, onClose, onSave, onPromoteCuratedToRecipe } = props
+  const { slot, slotLabel, picks, existingPoll, votersCount, voters, joiningUrl, shareText, userMeals, householdMeals, inventory, preferences, voterPreferences, onShare, onClose, onSave, onPromoteCuratedToRecipe } = props
 
   const newOption = (title: string, dishes: api.ManualDish[]): api.PollOption => ({
     id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `opt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
@@ -3753,6 +3808,7 @@ function CreatePollModal(props: CreatePollModalProps) {
       householdMeals={householdMeals}
       inventory={inventory}
       preferences={preferences}
+      voterPreferences={voterPreferences}
       selected={pickerSelected}
       onChangeSelected={setPickerSelected}
       search={pickerSearch}
