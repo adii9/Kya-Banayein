@@ -359,3 +359,29 @@ export function getOrderSuggestions(inventory: InventoryItem[]) {
     monthly: needed.filter((item) => item.category === 'monthly').map(({ category: _, ...item }) => item),
   }
 }
+
+// True iff every ingredient the dish needs is currently in stock at the
+// required quantity. Dishes with no declared ingredients pass (covers
+// user_meals authored without ingredients yet). The picker uses this to
+// filter the makeable-now view; the ranker in `recommendMeals` shares
+// the same definition (see `fullyAvailable`).
+export function isDishMakeable(dish: { ingredients: IngredientUse[] }, stock: Map<string, number>): boolean {
+  if (dish.ingredients.length === 0) return true
+  return dish.ingredients.every((use) => (stock.get(use.ingredientId) ?? 0) >= use.quantity)
+}
+
+// Convenience: build a stock map from an inventory array and filter
+// a heterogeneous dish list (curated + user_meals + household_meals)
+// down to only those makeable right now. Order is preserved; the
+// caller decides what to do with the survivors.
+//
+// `AnyDish` is structural: the kitchen check only reads `.ingredients`,
+// so the type intentionally accepts any object that has an ingredients
+// array. Curated `Dish` rows satisfy this directly; user_meals and
+// composed rows are cast at the call site so missing fields (e.g.
+// composed meals omit `time`/`color`) don't trip the checker.
+export type KitchenChecked = { ingredients: IngredientUse[] }
+export function makeableFromKitchen<T extends KitchenChecked>(inventory: InventoryItem[], dishes: T[]): T[] {
+  const stock = new Map(inventory.map((item) => [item.id, item.quantity]))
+  return dishes.filter((d) => isDishMakeable(d, stock))
+}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyDishOverrides, buildDishOverrideMap, confirmMeal, DISHES, getOrderSuggestions, mealTitleFromDishes, recommendMeals, type InventoryItem, type UserDish } from './mealEngine'
+import { applyDishOverrides, buildDishOverrideMap, confirmMeal, DISHES, getOrderSuggestions, isDishMakeable, makeableFromKitchen, mealTitleFromDishes, recommendMeals, type InventoryItem, type UserDish } from './mealEngine'
 
 describe('recommendMeals', () => {
   it('returns the user-selected number of meal options with the selected number of dishes', () => {
@@ -237,5 +237,58 @@ describe('getOrderSuggestions', () => {
 
     expect(orders.monthly).toEqual([{ id: 'atta', name: 'Atta', quantity: 2750, unit: 'g' }])
     expect(orders.weekly).toEqual([{ id: 'tomato', name: 'Tomato', quantity: 850, unit: 'g' }])
+  })
+})
+
+describe('isDishMakeable', () => {
+  const stock = new Map([['tomato', 500], ['onion', 200]])
+
+  it('returns true when every ingredient has enough stock', () => {
+    const dish = { ingredients: [{ ingredientId: 'tomato', quantity: 200 }, { ingredientId: 'onion', quantity: 100 }] }
+    expect(isDishMakeable(dish, stock)).toBe(true)
+  })
+
+  it('returns false when one ingredient is short even by 1g', () => {
+    const dish = { ingredients: [{ ingredientId: 'tomato', quantity: 501 }] }
+    expect(isDishMakeable(dish, stock)).toBe(false)
+  })
+
+  it('returns false when an ingredient is missing entirely', () => {
+    const dish = { ingredients: [{ ingredientId: 'toor-dal', quantity: 100 }] }
+    expect(isDishMakeable(dish, stock)).toBe(false)
+  })
+
+  it('treats ingredients-less dishes as makeable', () => {
+    const dish = { ingredients: [] }
+    expect(isDishMakeable(dish, stock)).toBe(true)
+  })
+})
+
+describe('makeableFromKitchen', () => {
+  it('returns only dishes whose ingredients are fully stocked', () => {
+    const inventory: InventoryItem[] = [
+      { id: 'rice', name: 'Rice', quantity: 500, unit: 'g', category: 'monthly', reorderAt: 100, targetStock: 3000 },
+      { id: 'tomato', name: 'Tomato', quantity: 50, unit: 'g', category: 'weekly', reorderAt: 100, targetStock: 500 },
+    ]
+    const dishes = [
+      DISHES.find((d) => d.id === 'roti')!,     // needs atta — missing → out
+      DISHES.find((d) => d.id === 'dal-tadka')!, // needs toor-dal — missing → out
+      DISHES.find((d) => d.id === 'bread-toast')!, // needs bread — missing → out
+      { id: 'user-rice', name: 'Rice Bowl', time: 10, vegetarian: true, kind: 'main' as const, color: '#fff', description: '', ingredients: [{ ingredientId: 'rice', quantity: 200 }] }, // 500 ≥ 200 → in
+    ]
+    const result = makeableFromKitchen(inventory, dishes)
+    expect(result.map((d) => d.id)).toEqual(['user-rice'])
+  })
+
+  it('preserves input order', () => {
+    const inventory: InventoryItem[] = [
+      { id: 'a', name: 'A', quantity: 100, unit: 'g', category: 'monthly', reorderAt: 0, targetStock: 100 },
+      { id: 'b', name: 'B', quantity: 100, unit: 'g', category: 'monthly', reorderAt: 0, targetStock: 100 },
+    ]
+    const dishes = [
+      { id: 'first', name: 'First', time: 5, vegetarian: true, kind: 'main' as const, color: '#aaa', description: '', ingredients: [{ ingredientId: 'a', quantity: 10 }] },
+      { id: 'second', name: 'Second', time: 5, vegetarian: true, kind: 'main' as const, color: '#bbb', description: '', ingredients: [{ ingredientId: 'b', quantity: 10 }] },
+    ]
+    expect(makeableFromKitchen(inventory, dishes).map((d) => d.id)).toEqual(['first', 'second'])
   })
 })

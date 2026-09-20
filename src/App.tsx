@@ -3,7 +3,7 @@ import type { Session } from '@supabase/supabase-js'
 import { Check, ChevronRight, Clock3, Layers, Leaf, LogOut, MessageCircle, Mic, MicOff, Minus, Package, Plus, RotateCcw, Send, Settings2, Share2, ShoppingBasket, Sparkles, Trash2, Users, UtensilsCrossed, Volume2, Vote, X } from 'lucide-react'
 import './App.css'
 import * as mealEngine from './mealEngine'
-const { buildDishOverrideMap, confirmMeal, DEFAULT_INVENTORY, DISHES, getOrderSuggestions, recommendMeals } = mealEngine
+import { buildDishOverrideMap, confirmMeal, DEFAULT_INVENTORY, DISHES, getOrderSuggestions, makeableFromKitchen, recommendMeals } from './mealEngine'
 type Dish = mealEngine.Dish
 type InventoryItem = mealEngine.InventoryItem
 type MealOption = mealEngine.MealOption
@@ -875,10 +875,17 @@ function App() {
   const [selectedSlot, setSelectedSlot] = useState<api.MealSlot>('DINNER')
   // Phase F: dish picker modal state. When `addPickerOpen` is non-null,
   // the modal is open for that slot. The picker shows your recipes,
-  // composed meals, curated dishes, and an ad-hoc "add a new dish" form.
+  // a makeable-now list (curated + user + composed filtered by kitchen),
+  // curated dishes, and an ad-hoc "add a new dish" form.
   const [addPickerOpen, setAddPickerOpen] = useState<api.MealSlot | null>(null)
   const [addPickerSearch, setAddPickerSearch] = useState('')
-  const [addPickerTab, setAddPickerTab] = useState<'yours' | 'composed' | 'curated' | 'new'>('yours')
+  const [addPickerTab, setAddPickerTab] = useState<'yours' | 'curated' | 'new'>('yours')
+  // Picker overlay mode. 'tabs' = the normal four-tab view.
+  // 'makeable' = the secondary "what can I cook right now" pane that
+  // overlays the tab body. The makeable view shares the same `selected`
+  // array as the tabs, so picks made there persist when the user
+  // returns to the main tab view.
+  const [addPickerView, setAddPickerView] = useState<'tabs' | 'makeable'>('tabs')
   const [addPickerSelected, setAddPickerSelected] = useState<api.ManualDish[]>([])
   const [addPickerAdhoc, setAddPickerAdhoc] = useState('')
   const [addPickerSaving, setAddPickerSaving] = useState(false)
@@ -1923,6 +1930,8 @@ function App() {
           onChangeSearch={setAddPickerSearch}
           tab={addPickerTab}
           onChangeTab={setAddPickerTab}
+          view={addPickerView}
+          onChangeView={setAddPickerView}
           adhoc={addPickerAdhoc}
           onChangeAdhoc={setAddPickerAdhoc}
           saving={addPickerSaving}
@@ -3202,8 +3211,12 @@ type AddDishModalProps = {
   onChangeSelected: (next: api.ManualDish[]) => void
   search: string
   onChangeSearch: (s: string) => void
-  tab: 'yours' | 'composed' | 'curated' | 'new'
-  onChangeTab: (t: 'yours' | 'composed' | 'curated' | 'new') => void
+  tab: 'yours' | 'curated' | 'new'
+  onChangeTab: (t: 'yours' | 'curated' | 'new') => void
+  // Picker overlay mode. 'tabs' = primary tabbed view; 'makeable' =
+  // the secondary kitchen-feasibility list that replaces the tab body.
+  view: 'tabs' | 'makeable'
+  onChangeView: (v: 'tabs' | 'makeable') => void
   adhoc: string
   onChangeAdhoc: (s: string) => void
   saving: boolean
@@ -3213,7 +3226,7 @@ type AddDishModalProps = {
 }
 
 function AddDishModal(props: AddDishModalProps) {
-  const { slot, slotLabel, userMeals, householdMeals, preferences, selected, onChangeSelected, search, onChangeSearch, tab, onChangeTab, adhoc, onChangeAdhoc, saving, onClose, onSave, onPromoteCuratedToRecipe } = props
+  const { slot, slotLabel, userMeals, householdMeals, inventory, preferences, selected, onChangeSelected, search, onChangeSearch, tab, onChangeTab, view, onChangeView, adhoc, onChangeAdhoc, saving, onClose, onSave, onPromoteCuratedToRecipe } = props
 
   // F5 fix: when the modal opens with pre-seeded selections (the curated
   // menu CTA), default to the 'curated' tab so the user immediately sees
@@ -3221,39 +3234,65 @@ function AddDishModal(props: AddDishModalProps) {
   // is present (the legacy single-dish picker flow).
 
   // Section lists. The `selected` array is the source of truth — the
-  // modal keeps it across tab switches so a user can browse multiple
-  // sections without losing their picks.
-  const userMealNamesLower = new Set(userMeals.map((m) => m.name.toLowerCase()))
+    // modal keeps it across tab switches so a user can browse multiple
+    // sections without losing their picks.
+    const userMealNamesLower = new Set(userMeals.map((m) => m.name.toLowerCase()))
 
-  const yourRecipes = userMeals.filter((m) => {
-    if (!search.trim()) return true
-    return m.name.toLowerCase().includes(search.toLowerCase()) || m.description.toLowerCase().includes(search.toLowerCase())
-  })
+    const yourRecipes = userMeals.filter((m) => {
+      if (!search.trim()) return true
+      return m.name.toLowerCase().includes(search.toLowerCase()) || m.description.toLowerCase().includes(search.toLowerCase())
+    })
 
-  const composedMeals = householdMeals.filter((m) => {
-    if (!search.trim()) return true
-    const names = Array.isArray(m.dishes) ? m.dishes.map((d: any) => d.name).join(' ').toLowerCase() : ''
-    return (m.name ?? '').toLowerCase().includes(search.toLowerCase()) || names.includes(search.toLowerCase())
-  })
+    const curated = DISHES.filter((d) => {
+      if (preferences.vegetarian && !d.vegetarian) return false
+      if (!search.trim()) return true
+      return d.name.toLowerCase().includes(search.toLowerCase()) || d.description.toLowerCase().includes(search.toLowerCase())
+    })
 
-  const curated = DISHES.filter((d) => {
-    if (preferences.vegetarian && !d.vegetarian) return false
-    if (!search.trim()) return true
-    return d.name.toLowerCase().includes(search.toLowerCase()) || d.description.toLowerCase().includes(search.toLowerCase())
-  })
+    // Makeable-now view: every dish (curated + user recipes + composed)
+    // where every required ingredient is fully in stock. Slot and
+    // vegetarian filters apply at the curated level; user/composed
+    // dishes pass through as-is when they pass the kitchen filter. The
+    // search box also matches in this view (filter-only; doesn't change
+    // the kitchen check). Built lazily — recomputed only when inventory
+    // or the source lists change.
+    const makeableCurated = makeableFromKitchen(inventory, curated)
+      const makeableUserRecipes = makeableFromKitchen(
+        inventory,
+        userMeals.map((m) => ({
+          ...m,
+          // user_meals.color is nullable; coerce so the makeable check
+          // doesn't trip on it. The kitchen check only needs ingredients.
+          color: m.color ?? '',
+          ingredients: Array.isArray((m as any).ingredients) ? (m as any).ingredients : [],
+        })),
+      ).filter((m) => !search.trim() || m.name.toLowerCase().includes(search.toLowerCase()))
+      const makeableHouseholdComposed = makeableFromKitchen(
+        inventory,
+        householdMeals.map((m) => {
+          // Composed meals reference dish ids; resolve each to its full
+          // ingredient list by looking it up in DISHES so the kitchen
+          // check sees the underlying ingredients, not the bundle label.
+          const resolved: mealEngine.IngredientUse[] = (Array.isArray(m.dishes) ? m.dishes : []).flatMap((d: any) => {
+            const seed = DISHES.find((s) => s.id === d.id)
+            return seed ? seed.ingredients : []
+          })
+          return { ...m, ingredients: resolved, color: '#888', time: 15, vegetarian: true, kind: 'main' as const }
+        }),
+      ).filter((m) => !search.trim() || m.name.toLowerCase().includes(search.toLowerCase()))
+      const makeableCount = makeableCurated.length + makeableUserRecipes.length + makeableHouseholdComposed.length
 
-  const isSelected = (key: string) => selected.some((d) => `${d.source}:${d.dish_id ?? d.name}` === key)
-  const toggleSelected = (dish: api.ManualDish) => {
-    const key = `${dish.source}:${dish.dish_id ?? dish.name}`
-    if (isSelected(key)) onChangeSelected(selected.filter((d) => `${d.source}:${d.dish_id ?? d.name}` !== key))
-    else onChangeSelected([...selected, dish])
-  }
+    const isSelected = (key: string) => selected.some((d) => `${d.source}:${d.dish_id ?? d.name}` === key)
+    const toggleSelected = (dish: api.ManualDish) => {
+      const key = `${dish.source}:${dish.dish_id ?? dish.name}`
+      if (isSelected(key)) onChangeSelected(selected.filter((d) => `${d.source}:${d.dish_id ?? d.name}` !== key))
+      else onChangeSelected([...selected, dish])
+    }
 
-  const counts = {
-    yours: userMeals.length,
-    composed: householdMeals.length,
-    curated: curated.length,
-  }
+    const counts = {
+      yours: userMeals.length,
+      curated: curated.length,
+    }
 
   const handleAddAdhoc = () => {
     const name = adhoc.trim()
@@ -3291,12 +3330,20 @@ function AddDishModal(props: AddDishModalProps) {
         />
       </div>
 
-      <nav className="picker-tabs" role="tablist">
+      <button
+        type="button"
+        className="picker-makeable"
+        onClick={() => onChangeView(view === 'makeable' ? 'tabs' : 'makeable')}
+        aria-pressed={view === 'makeable'}
+      >
+        <Package size={15} />
+        Makeable now from your kitchen
+        <span className="count">{makeableCount}</span>
+      </button>
+
+      {view === 'tabs' && <nav className="picker-tabs" role="tablist">
         <button role="tab" aria-selected={tab === 'yours'} className={tab === 'yours' ? 'active' : ''} onClick={() => onChangeTab('yours')}>
           Your recipes {counts.yours > 0 && <span className="count">{counts.yours}</span>}
-        </button>
-        <button role="tab" aria-selected={tab === 'composed'} className={tab === 'composed' ? 'active' : ''} onClick={() => onChangeTab('composed')}>
-          Composed {counts.composed > 0 && <span className="count">{counts.composed}</span>}
         </button>
         <button role="tab" aria-selected={tab === 'curated'} className={tab === 'curated' ? 'active' : ''} onClick={() => onChangeTab('curated')}>
           Curated {counts.curated > 0 && <span className="count">{counts.curated}</span>}
@@ -3304,10 +3351,62 @@ function AddDishModal(props: AddDishModalProps) {
         <button role="tab" aria-selected={tab === 'new'} className={tab === 'new' ? 'active' : ''} onClick={() => onChangeTab('new')}>
           New dish
         </button>
-      </nav>
+      </nav>}
 
       <div className="picker-body">
-        {tab === 'yours' && (yourRecipes.length === 0
+        {view === 'makeable' && (makeableCount === 0
+          ? <div className="picker-empty">
+              <p>Nothing is fully makeable from your kitchen right now.</p>
+              <p className="picker-empty-hint">Add items in the Kitchen tab, then come back here for one-tap picks.</p>
+            </div>
+          : <ul className="picker-list">
+              {makeableCurated.map((d) => {
+                const dish: api.ManualDish = { dish_id: d.id, name: d.name, source: 'curated' }
+                const key = `${dish.source}:${dish.dish_id}`
+                return <li key={`c-${d.id}`}>
+                  <label className={`picker-row ${isSelected(key) ? 'checked' : ''}`}>
+                    <input type="checkbox" checked={isSelected(key)} onChange={() => toggleSelected(dish)} />
+                    <span className="dish-dot" style={{ background: d.color }} />
+                    <span className="picker-row-text">
+                      <b>{d.name}</b>
+                      <small>{d.description} <span className="picker-tag">✓ in your kitchen</span></small>
+                    </span>
+                  </label>
+                </li>
+              })}
+              {makeableUserRecipes.map((m) => {
+                const dish: api.ManualDish = { dish_id: m.id, name: m.name, source: 'user_meal' }
+                const key = `${dish.source}:${dish.dish_id}`
+                return <li key={`u-${m.id}`}>
+                  <label className={`picker-row ${isSelected(key) ? 'checked' : ''}`}>
+                    <input type="checkbox" checked={isSelected(key)} onChange={() => toggleSelected(dish)} />
+                    <span className="dish-dot" style={{ background: sourceColor('user_meal') }} />
+                    <span className="picker-row-text">
+                      <b>{m.name}</b>
+                      <small>{m.description || 'Your recipe'} <span className="picker-tag">✓ in your kitchen</span></small>
+                    </span>
+                  </label>
+                </li>
+              })}
+              {makeableHouseholdComposed.map((m) => {
+                const dish: api.ManualDish = { dish_id: m.id, name: m.name, source: 'household_meal' }
+                const key = `${dish.source}:${dish.dish_id}`
+                const dishList = Array.isArray(m.dishes) ? m.dishes.map((d: any) => d.name).join(' + ') : ''
+                return <li key={`h-${m.id}`}>
+                  <label className={`picker-row ${isSelected(key) ? 'checked' : ''}`}>
+                    <input type="checkbox" checked={isSelected(key)} onChange={() => toggleSelected(dish)} />
+                    <span className="dish-dot" style={{ background: sourceColor('household_meal') }} />
+                    <span className="picker-row-text">
+                      <b>{m.name}</b>
+                      <small>{dishList || m.description || 'Composed meal'} <span className="picker-tag">✓ in your kitchen</span></small>
+                    </span>
+                  </label>
+                </li>
+              })}
+            </ul>
+        )}
+
+        {view === 'tabs' && tab === 'yours' && (yourRecipes.length === 0
           ? <p className="picker-empty">No recipes yet. Add some from the Recipes tab, or pick a curated dish — you can promote it to your recipes in one tap.</p>
           : <ul className="picker-list">
               {yourRecipes.map((m) => {
@@ -3324,25 +3423,7 @@ function AddDishModal(props: AddDishModalProps) {
             </ul>
         )}
 
-        {tab === 'composed' && (composedMeals.length === 0
-          ? <p className="picker-empty">No composed meals yet. Bundle 2+ dishes in the Recipes tab → Composed meals.</p>
-          : <ul className="picker-list">
-              {composedMeals.map((m) => {
-                const dish: api.ManualDish = { dish_id: m.id, name: m.name, source: 'household_meal' }
-                const key = `${dish.source}:${dish.dish_id}`
-                const dishList = Array.isArray(m.dishes) ? m.dishes.map((d: any) => d.name).join(' + ') : ''
-                return <li key={m.id}>
-                  <label className={`picker-row ${isSelected(key) ? 'checked' : ''}`}>
-                    <input type="checkbox" checked={isSelected(key)} onChange={() => toggleSelected(dish)} />
-                    <span className="dish-dot" style={{ background: sourceColor('household_meal') }} />
-                    <span className="picker-row-text"><b>{m.name}</b><small>{dishList || m.description || 'Composed meal'}</small></span>
-                  </label>
-                </li>
-              })}
-            </ul>
-        )}
-
-        {tab === 'curated' && (curated.length === 0
+        {view === 'tabs' && tab === 'curated' && (curated.length === 0
           ? <p className="picker-empty">No curated dishes match. Try clearing the search.</p>
           : <ul className="picker-list">
               {curated.map((d) => {
@@ -3481,7 +3562,8 @@ function CreatePollModal(props: CreatePollModalProps) {
   const [pickerOpenFor, setPickerOpenFor] = useState<string | null>(null)
   const [pickerSelected, setPickerSelected] = useState<api.ManualDish[]>([])
   const [pickerSearch, setPickerSearch] = useState('')
-  const [pickerTab, setPickerTab] = useState<'yours' | 'composed' | 'curated' | 'new'>('yours')
+  const [pickerTab, setPickerTab] = useState<'yours' | 'curated' | 'new'>('yours')
+  const [pickerView, setPickerView] = useState<'tabs' | 'makeable'>('tabs')
   const [pickerAdhoc, setPickerAdhoc] = useState('')
 
   useEffect(() => {
@@ -3677,6 +3759,8 @@ function CreatePollModal(props: CreatePollModalProps) {
       onChangeSearch={setPickerSearch}
       tab={pickerTab}
       onChangeTab={setPickerTab}
+      view={pickerView}
+      onChangeView={setPickerView}
       adhoc={pickerAdhoc}
       onChangeAdhoc={setPickerAdhoc}
       saving={false}
